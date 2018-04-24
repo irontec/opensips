@@ -1,0 +1,121 @@
+Source: itsbc-opensips
+Section: net
+Priority: optional
+Maintainer: Răzvan Crainea <razvan@opensips.org>
+Build-Depends: bison,
+               debhelper (>= 9),
+               default-libmysqlclient-dev | libmysqlclient-dev,
+               dh-systemd (>= 1.5),
+               dpkg-dev (>= 1.16.1.1),
+               flex,
+               libconfuse-dev,
+               libcurl4-gnutls-dev,
+               libdb-dev (>= 4.6.19),
+               libexpat1-dev,
+               libgeoip-dev (>= 1.4.4),
+               libhiredis-dev,
+               libjson-c-dev,
+               libldap2-dev,
+               liblua5.1-0-dev,
+               libmemcached-dev,
+               libmicrohttpd-dev,
+               libbson-dev | base-files (<< 9.4),
+               libmongoc-dev | base-files (<< 9.4),
+               libncurses5-dev,
+               libpcre3-dev,
+               libperl-dev,
+               libpq-dev,
+               librabbitmq-dev,
+               libradcli-dev | libfreeradius-client-dev,
+               libsctp-dev [linux-any],
+               libsnmp-dev,
+               libsqlite3-dev,
+               libssl-dev,
+               lsb-release,
+               uuid-dev,
+               libxml2-dev,
+               pkg-config,
+               python,
+               unixodbc-dev,
+               xsltproc,
+               zlib1g-dev
+Standards-Version: 3.9.8
+Homepage: http://www.opensips.org/
+
+Package: itsbc-opensips
+Architecture: any
+Multi-Arch: foreign
+Depends: adduser, python, ${misc:Depends}, ${shlibs:Depends},
+         itsbc-opensips-mysql-module (= ${binary:Version}),
+         itsbc-opensips-tls-module (= ${binary:Version}),
+         itsbc-opensips-tlsmgm-module (= ${binary:Version})
+Description: very fast and configurable SIP server
+ OpenSIPS is a very fast and flexible SIP (RFC3261)
+ server. Written entirely in C, OpenSIPS can handle thousands calls
+ per second even on low-budget hardware.
+ .
+ C Shell-like scripting language provides full control over the server's
+ behaviour. Its modular architecture allows only required functionality to be
+ loaded.
+ .
+ Among others, the following modules are available: Digest Authentication, CPL
+ scripts, Instant Messaging, MySQL support, Presence Agent, Radius
+ Authentication, Record Routing, SMS Gateway, Jabber/XMPP Gateway, Transaction
+ Module, Registrar and User Location, Load Balaning/Dispatching/LCR,
+ XMLRPC Interface.
+ .
+ This package contains the main OpenSIPS binary along with the principal modules
+ and support binaries including opensipsmc configuration tool.
+
+Package: itsbc-opensips-dbg
+Priority: extra
+Architecture: any
+Multi-Arch: same
+Section: debug
+Depends: opensips (= ${binary:Version}), ${misc:Depends}
+Description: very fast and configurable SIP server [debug symbols]
+ OpenSIPS is a very fast and flexible SIP (RFC3261)
+ server. Written entirely in C, OpenSIPS can handle thousands calls
+ per second even on low-budget hardware.
+ .
+ This package contains the debugging symbols for the OpenSIPS binaries and
+ modules. You only need to install it if you need to debug OpenSIPS.
+
+Package: itsbc-opensips-mysql-module
+Architecture: any
+Multi-Arch: same
+Depends: itsbc-opensips (= ${binary:Version}),
+         ${misc:Depends},
+         ${shlibs:Depends}
+Description: MySQL database connectivity module for OpenSIPS
+ OpenSIPS is a very fast and flexible SIP (RFC3261)
+ server. Written entirely in C, OpenSIPS can handle thousands calls
+ per second even on low-budget hardware.
+ .
+ This package provides the MySQL database driver for OpenSIPS.
+
+Package: itsbc-opensips-tlsmgm-module
+Architecture: any
+Multi-Arch: same
+Depends: itsbc-opensips (= ${binary:Version}), ${misc:Depends}, ${shlibs:Depends}
+Description: TLS management module for OpenSIPS
+ OpenSIPS is a very fast and flexible SIP (RFC3261)
+ server. Written entirely in C, OpenSIPS can handle thousands calls
+ per second even on low-budget hardware.
+ .
+ This package provides support for TLS management for OpenSIPS.
+
+Package: itsbc-opensips-tls-module
+Architecture: any
+Multi-Arch: same
+Depends: itsbc-opensips (= ${binary:Version}),
+         itsbc-opensips-tlsmgm-module (= ${binary:Version}),
+         ${misc:Depends},
+         ${shlibs:Depends}
+Description: TLS transport module for OpenSIPS
+ OpenSIPS is a very fast and flexible SIP (RFC3261)
+ server. Written entirely in C, OpenSIPS can handle thousands calls
+ per second even on low-budget hardware.
+ .
+ This package provides the TLS support for OpenSIPS.
+

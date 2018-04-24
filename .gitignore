@@ -10,7 +10,6 @@ cscope*
 /cfg.tab.h
 /lex.yy.c
 /opensips
-/debian
 /curses.out
 /.svnrevision
 /.gitrevision
