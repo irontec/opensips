@@ -15,7 +15,7 @@ PermissionsStartOnly=yes
 PIDFile=%t/opensips/opensips.pid
 ExecStart=/usr/sbin/opensips -P %t/opensips/opensips.pid -f /etc/opensips/opensips.cfg -m $S_MEMORY -M $P_MEMORY $OPTIONS
 Restart=always
-TimeoutStopSec=30s
+TimeoutStopSec=3s
 LimitNOFILE=262144
 
 [Install]
