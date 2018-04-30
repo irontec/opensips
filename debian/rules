@@ -382,5 +382,5 @@ get-orig-source:
 
 # generic rule
 %:
-	dh $@ --with systemd
+	dh $@ --with quilt --with systemd
 

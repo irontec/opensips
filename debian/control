@@ -38,6 +38,7 @@ Build-Depends: bison,
                python,
                unixodbc-dev,
                xsltproc,
+               quilt,
                zlib1g-dev
 Standards-Version: 3.9.8
 Homepage: http://www.opensips.org/
