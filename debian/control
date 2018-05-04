@@ -49,7 +49,8 @@ Multi-Arch: foreign
 Depends: adduser, python, ${misc:Depends}, ${shlibs:Depends},
          itsbc-opensips-mysql-module (= ${binary:Version}),
          itsbc-opensips-tls-module (= ${binary:Version}),
-         itsbc-opensips-tlsmgm-module (= ${binary:Version})
+         itsbc-opensips-tlsmgm-module (= ${binary:Version}),
+         itsbc-opensips-b2bua-module (= ${binary:Version})
 Description: very fast and configurable SIP server
  OpenSIPS is a very fast and flexible SIP (RFC3261)
  server. Written entirely in C, OpenSIPS can handle thousands calls
@@ -119,4 +120,16 @@ Description: TLS transport module for OpenSIPS
  per second even on low-budget hardware.
  .
  This package provides the TLS support for OpenSIPS.
+
+Package: itsbc-opensips-b2bua-module
+Architecture: any
+Multi-Arch: same
+Depends: itsbc-opensips (= ${binary:Version}), ${misc:Depends}, ${shlibs:Depends}
+Description: B2B User Agent modules for OpenSIPS
+ OpenSIPS is a very fast and flexible SIP (RFC3261)
+ server. Written entirely in C, OpenSIPS can handle thousands calls
+ per second even on low-budget hardware.
+ .
+ This package provides modules for B2BUA support in OpenSIPS. Both the
+ implementation and control (XML based scenario description) are included.
 
