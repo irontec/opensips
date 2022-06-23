@@ -90,6 +90,8 @@ struct mid_reg_info {
 	int expires_out; /* [NEW] outgoing expires value (not a unix TS!) */
 	                 /* used to absorb/relay new REGISTERs */
 
+	int last_ct_dereg; /* De-REGISTER received from last contact, forward it */
+
 	unsigned int last_reg_ts; /* [NEW] used to absorb/relay new REGISTERs
 	                                   marks the last successful reg */
 

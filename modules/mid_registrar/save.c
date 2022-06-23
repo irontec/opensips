@@ -118,7 +118,7 @@ void calc_ob_contact_expires(struct sip_msg* _m, param_t* _ep, int* _e,
 	LM_DBG("outgoing expires: %d\n", *_e);
 }
 
-static int trim_to_single_contact(struct sip_msg *msg, str *aor, int expires)
+static int trim_to_single_contact(struct sip_msg *msg, int last_ct_dereg, str *aor, int expires)
 {
 	contact_t *c = NULL;
 	struct socket_info *send_sock;
@@ -151,7 +151,7 @@ static int trim_to_single_contact(struct sip_msg *msg, str *aor, int expires)
 	for (c = ((contact_body_t *)ct->parsed)->contacts; c;
 	     c = get_next_contact(c)) {
 		calc_contact_expires(msg, c->expires, &e, 1);
-		if (e != 0)
+		if (e != 0 || !last_ct_dereg)
 			is_dereg = 0;
 
 		LM_DBG("deleting Contact '%.*s'\n", c->len, c->name.s);
@@ -688,7 +688,7 @@ void mid_reg_req_fwded(struct cell *_, int __, struct tmcb_params *params)
 
 	if (reg_mode == MID_REG_THROTTLE_AOR) {
 		LM_DBG("trimming all Contact URIs into one...\n");
-		if (trim_to_single_contact(req, &mri->aor, mri->expires_out)) {
+		if (trim_to_single_contact(req, mri->last_ct_dereg, &mri->aor, mri->expires_out)) {
 			LM_ERR("failed to overwrite Contact URI\n");
 			goto out;
 		}
@@ -1927,6 +1927,7 @@ static int prepare_forward(struct sip_msg *msg, udomain_t *d,
 	mri->dom = d;
 	mri->reg_flags = sctx->flags;
 	mri->star = sctx->star;
+	mri->last_ct_dereg = sctx->last_ct_dereg;
 
 	if (shm_str_dup(&mri->aor, &sctx->aor) != 0)
 		goto oom;
@@ -2404,6 +2405,7 @@ static int process_contacts_by_aor(struct sip_msg *req, urecord_t *urec,
 			if (e == 0) {
 				/* immediately forward De-REGISTERs for the last contact */
 				if (ctno == 1) {
+					_sctx->last_ct_dereg = 1;
 					LM_DBG("quickly forward last contact de-register\n");
 					return 1;
 				}

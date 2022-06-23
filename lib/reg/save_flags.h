@@ -44,6 +44,7 @@ struct save_ctx {
 	unsigned int expires;
 	int expires_out;
 	int star;
+	int last_ct_dereg;
 };
 
 
