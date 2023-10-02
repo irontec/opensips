@@ -249,12 +249,36 @@ TLS_MGM_MOD_PATH=$(addprefix modules/, $(TLS_MGM_MODULES))
 TLS_OPENSSL_PKGNAME = opensips-tls-openssl-module
 TLS_OPENSSL_MODULES = tls_openssl
 TLS_OPENSSL_MOD_PATH=$(addprefix modules/, $(TLS_OPENSSL_MODULES))
-TLS_WOLFSSL_PKGNAME = opensips-tls-wolfssl-module
-TLS_WOLFSSL_MODULES = tls_wolfssl
-TLS_WOLFSSL_MOD_PATH=$(addprefix modules/, $(TLS_WOLFSSL_MODULES))
 UNIXODBC_PKGNAME = opensips-unixodbc-module
 UNIXODBC_MODULES=db_unixodbc
 UNIXODBC_MOD_PATH=$(addprefix modules/, $(UNIXODBC_MODULES))
+PROTO_WSS_PKGNAME = opensips-wss-module
+PROTO_WSS_MODULES = proto_wss
+PROTO_WSS_MOD_PATH=$(addprefix modules/, $(PROTO_WSS_MODULES))
+TLS_MGM_PKGNAME = opensips-tlsmgm-module
+TLS_MGM_MODULES = tls_mgm
+TLS_MGM_MOD_PATH=$(addprefix modules/, $(TLS_MGM_MODULES))
+REST_CLIENT_PKGNAME = opensips-restclient-module
+REST_CLIENT_MODULES = rest_client
+REST_CLIENT_MOD_PATH=$(addprefix modules/, $(REST_CLIENT_MODULES))
+CGRATES_PKGNAME = opensips-cgrates-module
+CGRATES_MODULES = cgrates
+CGRATES_MOD_PATH=$(addprefix modules/, $(CGRATES_MODULES))
+XML_PKGNAME = opensips-xml-module
+XML_MODULES = xml
+XML_MOD_PATH=$(addprefix modules/, $(XML_MODULES))
+MONGODB_PKGNAME = opensips-mongodb-module
+MONGODB_MODULES = cachedb_mongodb
+MONGODB_MOD_PATH=$(addprefix modules/, $(MONGODB_MODULES))
+SIPREC_PKGNAME = opensips-siprec-module
+SIPREC_MODULES = siprec
+SIPREC_MOD_PATH=$(addprefix modules/, $(SIPREC_MODULES))
+PYTHON_PKGNAME = opensips-python-module
+PYTHON_MODULES = python
+PYTHON_MOD_PATH=$(addprefix modules/, $(PYTHON_MODULES))
+STIR_SHAKEN_PKGNAME = opensips-stir-shaken-module
+STIR_SHAKEN_MODULES = stir_shaken
+STIR_SHAKEN_MOD_PATH=$(addprefix modules/, $(STIR_SHAKEN_MODULES))
 UUID_PKGNAME = opensips-uuid-module
 UUID_MODULES = uuid
 UUID_MOD_PATH=$(addprefix modules/, $(UUID_MODULES))
@@ -432,5 +456,5 @@ get-orig-source:
 
 # generic rule
 %:
-	dh $@ --with systemd
+	dh $@ --with systemd --with quilt
 
