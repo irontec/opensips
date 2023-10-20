@@ -222,3 +222,29 @@ Description: WebSocket Secure (WSS) transport module for OpenSIPS
  .
  This package provides the WebSocket Secure (WSS) support for OpenSIPS.
 
+Package: opensips-dialplan-module
+Architecture: any
+Multi-Arch: same
+Depends: opensips (= ${binary:Version}), ${misc:Depends}, ${shlibs:Depends}
+Description: Generic string translation module for OpenSIPS
+ OpenSIPS is a very fast and flexible SIP (RFC3261)
+ server. Written entirely in C, OpenSIPS can handle thousands calls
+ per second even on low-budget hardware.
+ .
+ This package provides dialplan module that implements generic string
+ translations based on matching and replacement rules. It can be used to
+ manipulate R-URI or a PV and to translated to a new format/value.
+
+Package: opensips-regex-module
+Architecture: any
+Multi-Arch: same
+Depends: opensips (= ${binary:Version}), ${misc:Depends}, ${shlibs:Depends}
+Description: PCRE regexp modules for OpenSIPS
+ OpenSIPS is a very fast and flexible SIP (RFC3261)
+ server. Written entirely in C, OpenSIPS can handle thousands calls
+ per second even on low-budget hardware.
+ .
+ This package provides a module for matching operations against regular
+ expressions using the powerful PCRE library. By default, OpenSIPS support
+ sed-like regular expressions; PCRE library brings perl-like regular
+ expressions.
