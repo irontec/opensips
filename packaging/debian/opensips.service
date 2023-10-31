@@ -9,7 +9,7 @@ User=opensips
 Group=opensips
 RuntimeDirectory=opensips
 RuntimeDirectoryMode=775
-Environment=P_MEMORY=32 S_MEMORY=32
+Environment=P_MEMORY=512 S_MEMORY=1024
 EnvironmentFile=-/etc/default/opensips
 PermissionsStartOnly=yes
 PIDFile=%t/opensips/opensips.pid
