@@ -437,12 +437,17 @@ ifneq ($(INSTALL_PREFIX),)
 	sed -i -e "s#PATH_EXTRA=#PATH_EXTRA=$(BIN_PREFIX)/sbin:$(BIN_PREFIX)/bin#g" \
 		   $(CURDIR)/debian/opensips/etc/init.d/opensips
 endif
+	dh_installinit -p opensips --name=opensips_b2bua --noscripts --no-restart-on-upgrade --no-start
 
 override_dh_auto_test:
 	#Disable tests, too old and they are obsolete
 
+override_dh_systemd_enable:
+	dh_systemd_enable -p opensips --name=opensips_b2bua --no-enable
+
 override_dh_systemd_start:
 	dh_systemd_start --no-start # do not start until configured
+	dh_systemd_start  -p opensips --name=opensips_b2bua.service --no-restart-on-upgrade --no-start
 
 print-version:
 	@@echo "Debian version:          $(DEBVERSION)"

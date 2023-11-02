@@ -1,0 +1,23 @@
+[Unit]
+Description=OpenSIPS is a very fast and flexible SIP (RFC3261) server
+Documentation=man:opensips
+After=network.target mysqld.service postgresql.service rtpproxy.service
+
+[Service]
+Type=forking
+User=opensips
+Group=opensips
+RuntimeDirectory=opensips_b2bua
+RuntimeDirectoryMode=775
+Environment=P_MEMORY=128 S_MEMORY=256
+EnvironmentFile=-/etc/default/opensips_b2bua
+PermissionsStartOnly=yes
+PIDFile=%t/opensips_b2bua/opensips.pid
+ExecStart=/usr/sbin/opensips -P %t/opensips_b2bua/opensips.pid -f /etc/opensips/b2bua/opensips.cfg -m $S_MEMORY -M $P_MEMORY $OPTIONS
+ExecStop=/usr/bin/pkill --pidfile %t/opensips_b2bua/opensips.pid
+Restart=always
+TimeoutStopSec=30s
+LimitNOFILE=262144
+
+[Install]
+WantedBy=multi-user.target
