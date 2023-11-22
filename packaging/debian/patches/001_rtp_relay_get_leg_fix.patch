@@ -1,0 +1,13 @@
+diff --git a/modules/rtp_relay/rtp_relay.c b/modules/rtp_relay/rtp_relay.c
+index 95533c52c..5dc25666f 100644
+--- a/modules/rtp_relay/rtp_relay.c
++++ b/modules/rtp_relay/rtp_relay.c
+@@ -247,7 +247,7 @@ struct rtp_relay_leg *rtp_relay_get_leg(struct rtp_relay_ctx *ctx,
+ 			/* match by tag */
+ 			if (leg->tag.len && str_match(tag, &leg->tag))
+ 				return leg;
+-		} else if (leg->index != PV_IDX_ALL && leg->index == idx)
++		} else if (leg->index != RTP_RELAY_ALL_BRANCHES && leg->index == idx)
+ 			return leg;
+ 	}
+ 
