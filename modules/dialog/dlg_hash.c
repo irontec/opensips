@@ -810,6 +810,7 @@ struct dlg_cell* get_dlg( str *callid, str *ftag, str *ttag,
 	struct dlg_cell *dlg;
 	struct dlg_entry *d_entry;
 	unsigned int h_entry;
+	unsigned int dst_leg_backup = *dst_leg;
 
 	h_entry = dlg_hash(callid);
 	d_entry = &(d_table->entries[h_entry]);
@@ -835,12 +836,16 @@ struct dlg_cell* get_dlg( str *callid, str *ftag, str *ttag,
 				dlg->legs[DLG_CALLER_LEG].contact.len);
 #endif
 		if (match_dialog( dlg, callid, ftag, ttag, dir, dst_leg)==1) {
-			if (dlg->state==DLG_STATE_DELETED)
+			if (dlg->state==DLG_STATE_DELETED) {
 				/* even if matched, skip the deleted dialogs as they may be
 				   a previous unsuccessful attempt of established call
 				   with the same callid and fromtag - like in auth/challenge
 				   case -bogdan */
+				/* since this dialog is not considered matched, then the
+				 * dst_leg should not be populated either */
+				*dst_leg = dst_leg_backup;
 				continue;
+			}
 			DBG_REF(dlg, 1);
 			dlg->ref++;
 			dlg_unlock( d_table, d_entry);
@@ -1339,7 +1344,7 @@ void next_state_dlg(struct dlg_cell *dlg, int event, int dir, int *old_state,
 
 
 /**************************** MI functions ******************************/
-static char *dlg_val_buf;
+static str dlg_val_buf;
 static inline int internal_mi_print_dlg(mi_item_t *dialog_obj,
 									struct dlg_cell *dlg, int with_context)
 {
@@ -1496,11 +1501,12 @@ static inline int internal_mi_print_dlg(mi_item_t *dialog_obj,
 			for( dv=dlg->vals ; dv ; dv=dv->next) {
 				if (dv->type == DLG_VAL_TYPE_STR) {
 					/* escape non-printable chars */
-					p = pkg_realloc(dlg_val_buf, 4 * dv->val.s.len + 1);
-					if (!p) {
-						LM_ERR("not enough mem to allocate: %d\n", dv->val.s.len);
+					if (pkg_str_extend(&dlg_val_buf, 4 * dv->val.s.len + 1) != 0) {
+						LM_ERR("not enough mem to allocate: %d\n", 4 * dv->val.s.len + 1);
 						continue;
 					}
+
+					p = dlg_val_buf.s;
 					for (i = 0, j = 0; i < dv->val.s.len; i++) {
 						if (dv->val.s.s[i] < 0x20 || dv->val.s.s[i] >= 0x7F) {
 							p[j++] = '\\';

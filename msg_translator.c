@@ -2073,6 +2073,8 @@ static inline int insert_path_as_route(struct sip_msg* msg, str* path)
 		return -1;
 	}
 
+	msg->msg_flags |= FL_HAS_ROUTE_LUMP;
+
 	return 0;
 }
 
@@ -2166,6 +2168,7 @@ char * build_req_buf_from_sip_req( struct sip_msg* msg,
 			}
 			memcpy(extra_params.s, via_params->s, via_params->len);
 			memcpy(extra_params.s + via_params->len, id_buf, id_len);
+			pkg_free(id_buf);
 		} else {
 			extra_params.s=id_buf;
 			extra_params.len=id_len;

@@ -329,6 +329,7 @@ static int rtpproxy_api_copy_delete(struct rtp_relay_session *sess,
 		struct rtp_relay_server *server, void *_ctx, str *flags);
 static int rtpproxy_api_copy_serialize(void *_ctx, bin_packet_t *packet);
 static int rtpproxy_api_copy_deserialize(void **_ctx, bin_packet_t *packet);
+static void rtpproxy_api_copy_release(void **_ctx);
 
 int connect_rtpproxies(struct rtpp_set *filter);
 int update_rtpp_proxies(struct rtpp_set *filter);
@@ -1106,6 +1107,7 @@ static int mod_preinit(void)
 		.copy_delete = rtpproxy_api_copy_delete,
 		.copy_serialize = rtpproxy_api_copy_serialize,
 		.copy_deserialize = rtpproxy_api_copy_deserialize,
+		.copy_release = rtpproxy_api_copy_release,
 	};
 	if (!pv_parse_spec(&rtpproxy_relay_pvar_str, &media_pvar))
 		return -1;
@@ -3448,7 +3450,9 @@ static inline int rtpp_get_error(char *command)
 {
 	int ret;
 	str val;
-	if (!command || command[0] != 'E')
+	if (!command)
+		return -1;
+	if (command[0] != 'E')
 		return 0;
 	val.s = command + 1;
 	val.len = strlen(val.s) - 1 /* newline */;
@@ -4555,6 +4559,10 @@ static inline int rtpproxy_stats_f(struct sip_msg *msg,
 		/* we are done reading -> unref the data */
 		lock_stop_read( nh_lock );
 	}
+	if (!ret) {
+		LM_DBG("nothing returned by RTPProxy!\n");
+		return -1;
+	}
 	error = rtpp_get_error(ret);
 	switch (error) {
 		case 0:
@@ -4653,6 +4661,10 @@ static inline int rtpproxy_all_stats_f(struct sip_msg *msg, pv_spec_t *pavp,
 	for (chunk = 0; chunk < rtpp_stats_chunks_no; chunk++) {
 		vstat->vu[nitems] = rtpp_stats_chunks[chunk];
 		result = send_rtpp_command(node, vstat, nitems + 1);
+		if (!result) {
+			LM_DBG("no result from RTPProxy!\n");
+			goto error;
+		}
 
 		error = rtpp_get_error(result);
 		if (error) {
@@ -5892,7 +5904,6 @@ error:
 	if (nh_lock)
 		lock_stop_read(nh_lock);
 	rtpproxy_free_call_args(&args);
-	rtpproxy_copy_ctx_free(_ctx);
 	return ret <= 0?-1:1;
 }
 
@@ -5986,4 +5997,10 @@ static int rtpproxy_api_copy_deserialize(void **_ctx, bin_packet_t *packet)
 	}
 	*_ctx = ctx;
 	return -1;
+}
+
+static void rtpproxy_api_copy_release(void **_ctx)
+{
+	rtpproxy_copy_ctx_free(*_ctx);
+	*_ctx = NULL;
 }

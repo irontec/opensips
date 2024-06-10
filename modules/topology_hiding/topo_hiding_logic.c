@@ -1618,7 +1618,7 @@ static char* build_encoded_contact_suffix(struct sip_msg* msg,int *suffix_len)
 					/* we just iterate over the unknown params */
 					for (i=0;i<ctu.u_params_no;i++) {
 						if (str_match(&el->param_name, &ctu.u_name[i]))
-							suffix_len += topo_ct_param_len(&ctu.u_name[i], &ctu.u_val[i], 0);
+							total_len += topo_ct_param_len(&ctu.u_name[i], &ctu.u_val[i], 0);
 					}
 				}
 			}
@@ -1634,7 +1634,7 @@ static char* build_encoded_contact_suffix(struct sip_msg* msg,int *suffix_len)
 			for (el=th_hdr_param_list;el;el=el->next) {
 				for (it=((contact_body_t *)msg->contact->parsed)->contacts->params;it;it=it->next) {
 					if (str_match(&el->param_name, &it->name))
-						suffix_len += topo_ct_param_len(&it->name, &it->body, 1);
+						total_len += topo_ct_param_len(&it->name, &it->body, 1);
 				}
 			}
 		}
@@ -1956,6 +1956,7 @@ static int topo_no_dlg_seq_handling(struct sip_msg *msg,str *info)
 				LM_ERR("failed inserting new route set\n");
 				goto err_free_route;
 			}
+			msg->msg_flags |= FL_HAS_ROUTE_LUMP;
 
 			LM_DBG("Setting route  header to <%s> \n",route);
 			LM_DBG("setting dst_uri to <%.*s> \n",head->nameaddr.uri.len,
@@ -2017,6 +2018,7 @@ static int topo_no_dlg_seq_handling(struct sip_msg *msg,str *info)
 					LM_ERR("failed inserting new route set\n");
 					goto err_free_route;
 				}
+				msg->msg_flags |= FL_HAS_ROUTE_LUMP;
 			}
 
 			if (lmp == NULL) {
@@ -2049,6 +2051,7 @@ static int topo_no_dlg_seq_handling(struct sip_msg *msg,str *info)
 					pkg_free(remote_contact);
 					goto err_free_head;
 				}
+				msg->msg_flags |= FL_HAS_ROUTE_LUMP;
 			}
 		}
 	}

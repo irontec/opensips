@@ -82,6 +82,14 @@ static struct {
 	{ str_init("disabled"), RTP_RELAY_FLAGS_DISABLED },
 };
 
+typedef struct rtp_copy_ctx {
+	str id;
+	void *ctx;
+	struct rtp_relay *relay;
+	struct list_head list;
+} rtp_copy_ctx;
+
+
 static int rtp_relay_offer(struct rtp_relay_session *info,
 		struct rtp_relay_ctx *ctx, struct rtp_relay_sess *sess,
 		int leg, str *body);
@@ -226,8 +234,20 @@ static void rtp_relay_ctx_release_leg(struct rtp_relay_leg *leg)
 	rtp_relay_ctx_free_leg(leg);
 }
 
-static void rtp_relay_ctx_free_sess(struct rtp_relay_sess *s)
+static void rtp_copy_ctx_free(struct rtp_copy_ctx *copy_ctx)
 {
+	if (!copy_ctx)
+		return;
+	if (copy_ctx->ctx)
+		copy_ctx->relay->funcs.copy_release(&copy_ctx->ctx);
+	list_del(&copy_ctx->list);
+	shm_free(copy_ctx);
+};
+
+static void rtp_relay_ctx_free_sess(struct rtp_relay_ctx *ctx, struct rtp_relay_sess *s)
+{
+	if (ctx->established == s)
+		ctx->established = NULL;
 	rtp_relay_ctx_release_leg(s->legs[RTP_RELAY_CALLER]);
 	rtp_relay_ctx_release_leg(s->legs[RTP_RELAY_CALLEE]);
 	if (s->server.node.s)
@@ -258,7 +278,14 @@ static void rtp_relay_ctx_free(struct rtp_relay_ctx *ctx)
 		shm_free(ctx->delete.s);
 
 	list_for_each_safe(it, safe, &ctx->sessions)
-		rtp_relay_ctx_free_sess(list_entry(it, struct rtp_relay_sess, list));
+		rtp_relay_ctx_free_sess(ctx, list_entry(it, struct rtp_relay_sess, list));
+	list_for_each_safe(it, safe, &ctx->copy_contexts)
+		rtp_copy_ctx_free(list_entry(it, struct rtp_copy_ctx, list));
+
+	lock_start_write(rtp_relay_contexts_lock);
+	if (list_is_valid(&ctx->list))
+		list_del(&ctx->list);
+	lock_stop_write(rtp_relay_contexts_lock);
 
 	lock_destroy(&ctx->lock);
 	shm_free(ctx);
@@ -745,12 +772,6 @@ static void rtp_relay_b2b_new_local(struct cell* t, int type, struct tmcb_params
 		} \
 	} while (0)
 
-typedef struct rtp_copy_ctx {
-	str id;
-	void *ctx;
-	struct list_head list;
-} rtp_copy_ctx;
-
 rtp_copy_ctx *rtp_copy_ctx_get(struct rtp_relay_ctx *ctx, str *id)
 {
 	struct list_head *it;
@@ -764,7 +785,7 @@ rtp_copy_ctx *rtp_copy_ctx_get(struct rtp_relay_ctx *ctx, str *id)
 	return NULL;
 }
 
-rtp_copy_ctx *rtp_copy_ctx_new(struct rtp_relay_ctx *ctx, str *id)
+rtp_copy_ctx *rtp_copy_ctx_new(struct rtp_relay_ctx *ctx, struct rtp_relay *relay, str *id)
 {
 
 	rtp_copy_ctx *copy_ctx = shm_malloc(sizeof(*copy_ctx) + id->len);
@@ -774,6 +795,7 @@ rtp_copy_ctx *rtp_copy_ctx_new(struct rtp_relay_ctx *ctx, str *id)
 	copy_ctx->id.s = (char *)(copy_ctx + 1);
 	copy_ctx->id.len = id->len;
 	memcpy(copy_ctx->id.s, id->s, id->len);
+	copy_ctx->relay = relay;
 	list_add(&copy_ctx->list, &ctx->copy_contexts);
 	return copy_ctx;
 };
@@ -935,12 +957,10 @@ static void rtp_relay_loaded_callback(struct dlg_cell *dlg, int type,
 	RTP_RELAY_BIN_POP(int, &index);
 	while (index-- > 0) {
 		RTP_RELAY_BIN_POP(str, &tmp);
-		copy_ctx = rtp_copy_ctx_new(ctx, &tmp);
+		copy_ctx = rtp_copy_ctx_new(ctx, relay, &tmp);
 		if (copy_ctx &&
-				!relay->funcs.copy_deserialize(&copy_ctx->ctx, &packet)) {
-			list_del(&copy_ctx->list);
-			shm_free(copy_ctx);
-		}
+				!relay->funcs.copy_deserialize(&copy_ctx->ctx, &packet))
+			rtp_copy_ctx_free(copy_ctx);
 	}
 
 	RTP_RELAY_BIN_POP(str, &tmp);
@@ -1701,7 +1721,7 @@ static int rtp_relay_sess_success(struct rtp_relay_ctx *ctx,
 
 		if (rtp_relay_dlg_callbacks(dlg, ctx, to_tag) < 0) {
 			/* restore the state */
-			RTP_RELAY_CTX_REF(ctx);
+			RTP_RELAY_CTX_REF_UNSAFE(ctx, 1);
 			RTP_RELAY_PUT_TM_CTX(t, ctx);
 			return -1;
 		}
@@ -1725,7 +1745,7 @@ static int handle_rtp_relay_ctx_leg_reply(struct rtp_relay_ctx *ctx,
 			/* nothing to do */
 			LM_DBG("negative reply on late branch\n");
 		}
-		rtp_relay_ctx_free_sess(sess);
+		rtp_relay_ctx_free_sess(ctx, sess);
 		return 1;
 	}
 	/* fill in tag's tag */
@@ -1813,8 +1833,17 @@ static void rtp_relay_ctx_initial_cb(struct cell* t, int type, struct tmcb_param
 						rtp_sess_disabled(sess), rtp_sess_pending(sess));
 				goto end;
 			}
-			handle_rtp_relay_ctx_leg_reply(ctx, p->rpl, sess, RTP_RELAY_CALLEE);
-			rtp_relay_ctx_leg_reply(ctx, p->rpl, t, sess, RTP_RELAY_CALLEE);
+			switch (handle_rtp_relay_ctx_leg_reply(ctx, p->rpl, sess, RTP_RELAY_CALLEE)) {
+				case 0:
+					rtp_relay_ctx_leg_reply(ctx, p->rpl, t, sess, RTP_RELAY_CALLEE);
+					break;
+				case 1:
+					lock_start_write(rtp_relay_contexts_lock);
+					if (list_is_valid(&ctx->list))
+						list_del(&ctx->list);
+					lock_stop_write(rtp_relay_contexts_lock);
+					break;
+			}
 			break;
 		case TMCB_REQUEST_FWDED:
 			sess = rtp_relay_get_sess(ctx, rtp_relay_ctx_branch());
@@ -2091,7 +2120,7 @@ static struct rtp_relay_tmp *rtp_relay_new_tmp(struct rtp_relay_ctx *ctx,
 	return tmp;
 error:
 	if (tmp->sess)
-		rtp_relay_ctx_free_sess(tmp->sess);
+		rtp_relay_ctx_free_sess(ctx, tmp->sess);
 	shm_free(tmp);
 	return NULL;
 }
@@ -2108,7 +2137,7 @@ static int rtp_relay_release_tmp(struct rtp_relay_tmp *tmp, int success)
 	if (tmp->ctx->ref == 0) {
 		RTP_RELAY_CTX_UNLOCK(tmp->ctx);
 		rtp_relay_ctx_free(tmp->ctx);
-		rtp_relay_ctx_free_sess(tmp->sess);
+		rtp_relay_ctx_free_sess(tmp->ctx, tmp->sess);
 		tmp->ctx = NULL;
 	} else {
 		if (success) {
@@ -2122,12 +2151,12 @@ static int rtp_relay_release_tmp(struct rtp_relay_tmp *tmp, int success)
 				INIT_LIST_HEAD(&del_sess->list);
 			} else {
 				/* otherwise cleanup the structure now */
-				rtp_relay_ctx_free_sess(tmp->ctx->established);
+				rtp_relay_ctx_free_sess(tmp->ctx, tmp->ctx->established);
 			}
 			tmp->ctx->established = tmp->sess;
 			list_add(&tmp->sess->list, &tmp->ctx->sessions);
 		} else {
-			rtp_relay_ctx_free_sess(tmp->sess);
+			rtp_relay_ctx_free_sess(tmp->ctx, tmp->sess);
 		}
 		RTP_RELAY_CTX_UNLOCK(tmp->ctx);
 	}
@@ -2154,7 +2183,7 @@ static int rtp_relay_release_tmp(struct rtp_relay_tmp *tmp, int success)
 		if (tmp->dlg)
 			rtp_relay_delete_ctx(tmp->ctx, del_sess,
 					(tmp->state == RTP_RELAY_TMP_OFFER?RTP_RELAY_CALLER:RTP_RELAY_CALLEE));
-		rtp_relay_ctx_free_sess(del_sess);
+		rtp_relay_ctx_free_sess(tmp->ctx, del_sess);
 	}
 	if (tmp->dlg)
 		rtp_relay_dlg.dlg_unref(tmp->dlg, 1);
@@ -2553,7 +2582,7 @@ mi_response_t *mi_rtp_relay_update_callid(const mi_params_t *params,
 	if (rtp_relay_ctx_pending(ctx)) {
 		RTP_RELAY_CTX_UNLOCK(ctx);
 		lock_stop_read(rtp_relay_contexts_lock);
-		goto error;
+		return 0;
 	}
 
 	ctmp = rtp_relay_new_tmp(ctx, set, node);
@@ -2698,7 +2727,7 @@ int rtp_relay_copy_offer(rtp_ctx _ctx, str *id, str *flags,
 	}
 	rtp_copy = rtp_copy_ctx_get(ctx, id);
 	if (!rtp_copy) {
-		rtp_copy = rtp_copy_ctx_new(ctx, id);
+		rtp_copy = rtp_copy_ctx_new(ctx, sess->relay, id);
 		if (!rtp_copy) {
 			LM_ERR("oom for rtp copy context!\n");
 			return -1;
@@ -2804,8 +2833,7 @@ int rtp_relay_copy_delete(rtp_ctx _ctx, str *id, str *flags)
 	ret = sess->relay->funcs.copy_delete(
 			&info, &sess->server,
 			copy_ctx->ctx, flags);
-	list_del(&copy_ctx->list);
-	shm_free(copy_ctx);
+	rtp_copy_ctx_free(copy_ctx);
 	return ret;
 }
 

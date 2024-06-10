@@ -271,13 +271,15 @@ static inline char* int2bstr(uint64_t l, char *s, int* len)
 /* INTeger-TO-STRing : convers a 64-bit integer to a string
  * returns a pointer to a static buffer containing l in asciiz & sets len */
 #define INT2STR_BUF_NO    7
+extern unsigned int int2str_buf_index;
 extern char int2str_buf[INT2STR_BUF_NO][INT2STR_MAX_LEN];
+static inline unsigned int getstrbufindex(void) {
+	return ((int2str_buf_index++) % INT2STR_BUF_NO);
+}
+
 static inline char* int2str(uint64_t l, int* len)
 {
-	static unsigned int it = 0;
-
-	if ((++it)==INT2STR_BUF_NO) it = 0;
-	return int2bstr( l, int2str_buf[it], len);
+	return int2bstr( l, int2str_buf[getstrbufindex()], len);
 }
 
 
@@ -303,9 +305,9 @@ static inline char* sint2str(long l, int* len)
 
 static inline char* double2str(double d, int* len)
 {
-	static int buf;
+	unsigned int buf;
 
-	buf = (buf + 1) % INT2STR_BUF_NO;
+	buf = getstrbufindex();
 	*len = snprintf(int2str_buf[buf], INT2STR_MAX_LEN - 1, "%0.*lf",
 	                FLOATING_POINT_PRECISION, d);
 	int2str_buf[buf][*len] = '\0';
@@ -610,7 +612,8 @@ static inline void unescape_crlf(str *in_out)
 	}
 }
 
-static inline int _is_e164(const str* _user, int require_plus)
+/* @max_digits should be just 15, but there are exceptions to this rule! */
+static inline int _is_e164(const str* _user, int require_plus, int max_digits)
 {
 	char *d, *start, *end;
 
@@ -626,7 +629,7 @@ static inline int _is_e164(const str* _user, int require_plus)
 	}
 
 	end = _user->s + _user->len;
-	if (end - start < 2 || end - start > 15)
+	if (end - start < 2 || end - start > max_digits)
 		return -1;
 
 	for (d = start; d < end; d++)
@@ -635,7 +638,7 @@ static inline int _is_e164(const str* _user, int require_plus)
 
 	return 1;
 }
-#define is_e164(_user) _is_e164(_user, 1)
+#define is_e164(_user) _is_e164(_user, 1, 15)
 
 /*
  * Convert a string to lower case
