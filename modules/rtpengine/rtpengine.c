@@ -298,7 +298,8 @@ static int rtpengine_api_delete(struct rtp_relay_session *sess, struct rtp_relay
 			str *flags, str *extra);
 static int rtpengine_api_copy_offer(struct rtp_relay_session *sess,
 		struct rtp_relay_server *server, void **_ctx, str *flags,
-		unsigned int copy_flags, unsigned int streams, str *body);
+		unsigned int copy_flags, unsigned int streams, str *body,
+		struct rtp_relay_streams *streams_map);
 static int rtpengine_api_copy_answer(struct rtp_relay_session *sess,
 		struct rtp_relay_server *server, void *_ctx, str *flags, str *body);
 static int rtpengine_api_copy_delete(struct rtp_relay_session *sess,
@@ -669,10 +670,10 @@ static int pv_rtpengine_index(pv_spec_p sp, const str *in)
 }
 
 static const pv_export_t mod_pvs[] = {
-	{{"rtpstat", (sizeof("rtpstat")-1)}, /* RTP-Statistics */
+	{str_const_init("rtpstat"), /* RTP-Statistics */
 		1000, pv_get_rtpstat_f, 0, pv_parse_rtpstat,
 		pv_rtpengine_index, pv_rtpengine_stats_used, 0},
-	{{"rtpquery", (sizeof("rtpquery")-1)},
+	{str_const_init("rtpquery"),
 		1000, pv_get_rtpquery_f, 0, 0, 0, pv_rtpengine_stats_used, 0},
 	{{0, 0}, 0, 0, 0, 0, 0, 0, 0}
 };
@@ -1492,7 +1493,7 @@ static int mod_preinit(void)
 	};
 	if (!pv_parse_spec(&rtpengine_relay_pvar_str, &media_pvar))
 		return -1;
-	register_rtp_relay(exports.name, &binds, &rtp_relay);
+	register_rtp_relay("rtpengine", &binds, &rtp_relay);
 	return 0;
 }
 
@@ -2437,7 +2438,8 @@ static struct rtpe_node *get_rtpe_node(str *node, struct rtpe_set *set)
 	for (rnode = set->rn_first; rnode; rnode = rnode->rn_next)
 		if (node->len == rnode->rn_url.len &&
 				!memcmp(node->s, rnode->rn_url.s, node->len)) {
-			return rnode;
+			rnode->rn_disabled = rtpe_test(rnode, rnode->rn_disabled, 0);
+			return (rnode->rn_disabled?NULL:rnode);
 		}
 	return NULL;
 }
@@ -4401,11 +4403,64 @@ static str *rtpengine_new_subs(str *tag)
 	return to_tag;
 }
 
+static void rtpengine_copy_streams(bencode_item_t *streams, struct rtp_relay_streams *ret)
+{
+	bencode_item_t *item, *medias;
+	str tmp = STR_NULL;
+	struct dlg_cell *dlg;
+	int leg = RTP_RELAY_CALLER, medianum, label, s;
+	if (!ret || !streams)
+		return;
+	ret->count = 0;
+	dlg = dlgb.get_dlg();
+	if (!dlg)
+		LM_WARN("could not fetch dialog - legs might not match\n");
+	s = 0;
+	for (item = streams->child; item; item = item->sibling) {
+		if (dlg) {
+			tmp.s = bencode_dictionary_get_string(item, "tag", &tmp.len);
+			if (!tmp.s)
+				LM_WARN("could not retrieve tag - placing to %s\n",
+						(leg == RTP_RELAY_CALLER?"caller":"callee"));
+			else if (!str_match(&tmp, &dlg->legs[DLG_CALLER_LEG].tag))
+				leg = RTP_RELAY_CALLEE;
+			else
+				leg = RTP_RELAY_CALLER;
+		} else if (leg == RTP_RELAY_CALLER) {
+			/* first try caller, then callee */
+			leg = RTP_RELAY_CALLEE;
+		}
+		medias = bencode_dictionary_get_expect(item, "medias", BENCODE_LIST);
+		if (!medias)
+			continue;
+		for (medias = medias->child; medias; medias = medias->sibling) {
+			s = ret->count;
+			if (s == RTP_COPY_MAX_STREAMS) {
+				LM_WARN("maximum amount of streams %d reached!\n",
+						RTP_COPY_MAX_STREAMS);
+				return;
+			}
+			medianum = bencode_dictionary_get_integer(item, "index", 0);
+			tmp.s = bencode_dictionary_get_string(medias, "label", &tmp.len);
+			if (str2sint(&tmp, &label) < 0) {
+				LM_WARN("invalid label %.*s - not integer - skipping\n",
+						tmp.len, tmp.s);
+				continue;
+			}
+			ret->streams[s].leg = leg;
+			ret->streams[s].label = label;
+			ret->streams[s].medianum = medianum;
+			ret->count++;
+		}
+	}
+}
+
 static int rtpengine_api_copy_offer(struct rtp_relay_session *sess,
 		struct rtp_relay_server *server, void **_ctx, str *flags,
-		unsigned int copy_flags, unsigned int streams, str *ret_body)
+		unsigned int copy_flags, unsigned int streams, str *ret_body,
+		struct rtp_relay_streams *ret_streams)
 {
-	str tmp, *to_tag;
+	str tmp;
 	bencode_item_t *ret;
 	ret = rtpengine_api_copy_op(sess, OP_SUBSCRIBE_REQUEST,
 			server, *_ctx, flags, copy_flags, NULL);
@@ -4413,10 +4468,12 @@ static int rtpengine_api_copy_offer(struct rtp_relay_session *sess,
 		return -1;
 	if (!bencode_dictionary_get_str_dup(ret, "sdp", ret_body))
 		LM_ERR("failed to extract sdp body from proxy reply\n");
+	if (ret_streams)
+		rtpengine_copy_streams(bencode_dictionary_get(ret, "tag-medias"), ret_streams);
 	if (!bencode_dictionary_get_str(ret, "to-tag", &tmp))
 		LM_ERR("failed to extract to-tag from proxy reply\n");
-	to_tag = rtpengine_new_subs(&tmp);
-	*_ctx = to_tag;
+	else
+		*_ctx = rtpengine_new_subs(&tmp);
 	bencode_buffer_free(bencode_item_buffer(ret));
 	return 0;
 }

@@ -21,18 +21,18 @@
 	<row>
 		<entry>1. </entry>
 		<entry>Razvan Crainea (<ulink url="https://github.com/razvancrainea">@razvancrainea</ulink>)</entry>
-		<entry align="center">147</entry>
-		<entry align="center">81</entry>
-		<entry align="center">5772</entry>
-		<entry align="center">1135</entry>
+		<entry align="center">158</entry>
+		<entry align="center">90</entry>
+		<entry align="center">5828</entry>
+		<entry align="center">1155</entry>
 	</row>
 	<row>
 		<entry>2. </entry>
 		<entry>Maksym Sobolyev (<ulink url="https://github.com/sobomax">@sobomax</ulink>)</entry>
-		<entry align="center">5</entry>
-		<entry align="center">3</entry>
-		<entry align="center">7</entry>
-		<entry align="center">8</entry>
+		<entry align="center">6</entry>
+		<entry align="center">4</entry>
+		<entry align="center">10</entry>
+		<entry align="center">11</entry>
 	</row>
 	<row>
 		<entry>3. </entry>
@@ -44,6 +44,14 @@
 	</row>
 	<row>
 		<entry>4. </entry>
+		<entry>Norman Brandinger (<ulink url="https://github.com/NormB">@NormB</ulink>)</entry>
+		<entry align="center">3</entry>
+		<entry align="center">1</entry>
+		<entry align="center">1</entry>
+		<entry align="center">1</entry>
+	</row>
+	<row>
+		<entry>5. </entry>
 		<entry>Vlad Paiu (<ulink url="https://github.com/vladpaiu">@vladpaiu</ulink>)</entry>
 		<entry align="center">2</entry>
 		<entry align="center">1</entry>
@@ -81,20 +89,25 @@
 	<row>
 		<entry>1. </entry>
 		<entry>Razvan Crainea (<ulink url="https://github.com/razvancrainea">@razvancrainea</ulink>)</entry>
-		<entry align="center">Apr 2021 - Mar 2024</entry>
+		<entry align="center">Apr 2021 - Aug 2024</entry>
 	</row>
 	<row>
 		<entry>2. </entry>
-		<entry>Vlad Patrascu (<ulink url="https://github.com/rvlad-patrascu">@rvlad-patrascu</ulink>)</entry>
-		<entry align="center">Mar 2023 - Mar 2023</entry>
+		<entry>Norman Brandinger (<ulink url="https://github.com/NormB">@NormB</ulink>)</entry>
+		<entry align="center">Mar 2024 - Mar 2024</entry>
 	</row>
 	<row>
 		<entry>3. </entry>
 		<entry>Maksym Sobolyev (<ulink url="https://github.com/sobomax">@sobomax</ulink>)</entry>
-		<entry align="center">Feb 2023 - Feb 2023</entry>
+		<entry align="center">Feb 2023 - Nov 2023</entry>
 	</row>
 	<row>
 		<entry>4. </entry>
+		<entry>Vlad Patrascu (<ulink url="https://github.com/rvlad-patrascu">@rvlad-patrascu</ulink>)</entry>
+		<entry align="center">Mar 2023 - Mar 2023</entry>
+	</row>
+	<row>
+		<entry>5. </entry>
 		<entry>Vlad Paiu (<ulink url="https://github.com/vladpaiu">@vladpaiu</ulink>)</entry>
 		<entry align="center">Oct 2022 - Oct 2022</entry>
 	</row>

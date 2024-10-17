@@ -1271,6 +1271,7 @@ static int b2b_sdp_client_reply_invite(struct sip_msg *msg, struct b2b_sdp_clien
 			ret = -2;
 			goto release;
 		}
+		ctx->success_no = 0;
 		/* we've actually completed all the upstream clients
 		 * therefore we need to respond to the server */
 		body = b2b_sdp_mux_body(ctx);
@@ -1673,8 +1674,8 @@ static int b2b_sdp_demux_start(struct sip_msg *msg, str *uri,
 	struct list_head *it;
 	struct b2b_sdp_client *client;
 	client_info_t ci;
-	struct socket_info *si;
-	str *sess_ip;
+	const struct socket_info *si;
+	const str *sess_ip;
 
 	if (!msg->force_send_socket) {
 		si = uri2sock(msg, uri, &tmp_su, PROTO_NONE);

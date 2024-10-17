@@ -65,8 +65,8 @@ MAIN_NAME=opensips
 
 #version number
 VERSION_MAJOR = 3
-VERSION_MINOR = 4
-VERSION_SUBMINOR = 5
+VERSION_MINOR = 5
+VERSION_SUBMINOR = 1
 VERSION_BUILD =
 
 ifneq (,$(VERSION_BUILD))
@@ -147,7 +147,7 @@ YACC := $(shell echo "$${YACC}")
 
 # find compiler name & version
 ifeq ($(CC),)
- 	CC=gcc
+	CC=$(shell for x in cc clang gcc; do which $${x} >/dev/null && break; done; echo $${x})
 endif
 LD= $(CC)
 CC_LONGVER=$(shell if  $(CC) -v 2>/dev/null; then \
@@ -1414,19 +1414,16 @@ DEFAULT_YACC=bison
 
 # on solaris add -lxnet (e.g. LIBS= -lxnet)
 _SAVE_LIBS := $(LIBS)
-LIBS+= -ldl -lresolv
+LIBS+= -ldl -lresolv -pthread
 
 #os specific stuff
 ifeq ($(OS), linux)
-	DEFS+=-DHAVE_GETHOSTBYNAME2 -DHAVE_UNION_SEMUN -DHAVE_SCHED_YIELD \
+	DEFS+=-DHAVE_GETHOSTBYNAME2 -DHAVE_UNION_SEMUN \
 			-DHAVE_MSG_NOSIGNAL -DHAVE_MSGHDR_MSG_CONTROL -DHAVE_ALLOCA_H \
 			-DHAVE_TIMEGM
 	ifneq ($(found_lock_method), yes)
 		DEFS+= -DUSE_POSIX_SEM  # try posix sems
 		found_lock_method=yes
-	endif
-	ifneq (,$(findstring USE_PTHREAD_MUTEX, $(DEFS)))
-		LIBS += -pthread
 	endif
 	ifneq (,$(findstring PROFILING, $(DEFS)))
 		LIBS += -lprofiler
@@ -1451,7 +1448,7 @@ ifeq ($(OS), linux)
 endif
 
 ifeq ($(OS), gnu_kfreebsd)
-	DEFS+=-DHAVE_GETHOSTBYNAME2 -DHAVE_UNION_SEMUN -DHAVE_SCHED_YIELD \
+	DEFS+=-DHAVE_GETHOSTBYNAME2 -DHAVE_UNION_SEMUN \
 			-DHAVE_MSG_NOSIGNAL -DHAVE_MSGHDR_MSG_CONTROL -DHAVE_ALLOCA_H \
 			-DHAVE_TIMEGM
 	ifneq ($(found_lock_method), yes)
@@ -1470,7 +1467,7 @@ ifeq ($(OS), gnu_kfreebsd)
 endif
 
 ifeq  ($(OS), solaris)
-	DEFS+= -DHAVE_GETIPNODEBYNAME -DHAVE_SYS_SOCKIO_H -DHAVE_SCHED_YIELD \
+	DEFS+= -DHAVE_GETIPNODEBYNAME -DHAVE_SYS_SOCKIO_H \
 			-DHAVE_ALLOCA_H -DUSE_SIGACTION -D_POSIX_PTHREAD_SEMANTICS
 	ifneq ($(found_lock_method), yes)
 		DEFS+= -DUSE_PTHREAD_MUTEX  # try pthread sems
@@ -1511,16 +1508,12 @@ endif
 
 ifeq ($(OS), freebsd)
 	DEFS+=-DHAVE_SOCKADDR_SA_LEN -DHAVE_GETHOSTBYNAME2 -DHAVE_UNION_SEMUN \
-		-DHAVE_SCHED_YIELD -DHAVE_MSGHDR_MSG_CONTROL \
-		-DHAVE_CONNECT_ECONNRESET_BUG -DHAVE_TIMEGM \
-		-DHAVE_NETINET_IN_SYSTM
+		-DHAVE_MSGHDR_MSG_CONTROL -DHAVE_CONNECT_ECONNRESET_BUG \
+		-DHAVE_TIMEGM -DHAVE_NETINET_IN_SYSTM
 	LIBS=  $(_SAVE_LIBS) #resolver & dlopen is in libc
 	ifneq ($(found_lock_method), yes)
 		DEFS+= -DUSE_PTHREAD_MUTEX  # try pthread sems
 		found_lock_method=yes
-	endif
-	ifneq (,$(findstring USE_PTHREAD_MUTEX, $(DEFS)))
-		LIBS+=-lpthread
 	endif
 	# check for ver >= 4.1
 	ifeq ($(shell [ $(OSREL_N) -gt 4001 ] && echo has_kqueue), has_kqueue)
@@ -1598,18 +1591,15 @@ endif
 # OS X support, same as freebsd
 ifeq ($(OS), darwin)
 	DEFS+=-DHAVE_SOCKADDR_SA_LEN -DHAVE_GETHOSTBYNAME2 -DHAVE_UNION_SEMUN \
-		-DHAVE_SCHED_YIELD -DHAVE_MSGHDR_MSG_CONTROL \
-		-DUSE_ANON_MMAP \
+		-DHAVE_MSGHDR_MSG_CONTROL -DUSE_ANON_MMAP \
 		-DNDEBUG -DHAVE_CONNECT_ECONNRESET_BUG -DHAVE_TIMEGM
 	# -DNDEBUG used to turn off assert (assert wants to call
 	# eprintf which doesn't seem to be defined in any shared lib
 	ifneq ($(found_lock_method), yes)
 		DEFS+= -DUSE_PTHREAD_MUTEX  # try pthread sems
 		found_lock_method=yes
-		LIBS= -pthread -lresolv  #dlopen is in libc
-	else
-		LIBS= -lresolv  #dlopen is in libc
 	endif
+	LIBS= -lresolv  #dlopen is in libc
 	ifeq ($(NO_KQUEUE),)
 		DEFS+=-DHAVE_KQUEUE
 	endif

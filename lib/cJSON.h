@@ -30,6 +30,10 @@ extern "C"
 {
 #endif
 
+#ifndef CJSON_PREFIX
+#define CJSON_PREFIX os_
+#endif
+
 #ifdef CJSON_PREFIX
 
 /* helpers */
@@ -149,7 +153,9 @@ extern cJSON_Hooks sys_mem_hooks;
 extern cJSON_Hooks shm_mem_hooks;
 
 
-/* Supply a block of JSON, and this returns a cJSON object you can interrogate. Call cJSON_Delete when finished. */
+/* Supply a block of JSON, and this returns a cJSON object you can interrogate.
+ * The input @value can be safely freed immediately after the parsing.
+ * Call cJSON_Delete when finished. */
 extern cJSON *cJSON_Parse(const char *value);
 /* Render a cJSON entity to text for transfer/storage. Free the char* when finished. */
 extern char  *cJSON_Print(const cJSON *item);

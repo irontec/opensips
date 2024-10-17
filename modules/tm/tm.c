@@ -88,6 +88,8 @@ static int pv_get_tm_ruri(struct sip_msg *msg, pv_param_t *param,
 		pv_value_t *res);
 static int pv_get_t_id(struct sip_msg *msg, pv_param_t *param,
 		pv_value_t *res);
+static int pv_get_tm_branch_reply_code(struct sip_msg *msg, pv_param_t *param,
+		pv_value_t *res);
 
 /* fixup functions */
 static int fixup_local_replied(void** param);
@@ -138,6 +140,12 @@ struct sip_msg* tm_pv_context_reply(struct sip_msg* msg);
 /* these values are used when the transaction has not been defined yet */
 int fr_timeout;
 int fr_inv_timeout;
+
+static char* tm_local_reply_route_s;
+struct script_route_ref *tm_local_reply_route = NULL;
+
+static char* tm_local_request_route_s;
+struct script_route_ref *tm_local_request_route = NULL;
 
 #define TM_CANCEL_BRANCH_ALL    (1<<0)
 #define TM_CANCEL_BRANCH_OTHERS (1<<1)
@@ -338,6 +346,10 @@ static const param_export_t params[]={
 		&tm_cluster_param.s },
 	{ "cluster_auto_cancel",      INT_PARAM,
 		&tm_repl_auto_cancel },
+	{ "local_reply_route",        STR_PARAM,
+		&tm_local_reply_route_s },
+	{ "local_request_route",      STR_PARAM,
+		&tm_local_request_route_s },
 	{0,0,0}
 };
 
@@ -375,23 +387,26 @@ static const stat_export_t mod_stats[] = {
  * pseudo-variables exported by TM module
  */
 static const pv_export_t mod_items[] = {
-	{ {"T_branch_idx", sizeof("T_branch_idx")-1}, 900,
+	{ str_const_init("T_branch_idx"), 900,
 		pv_get_tm_branch_idx, NULL, NULL, NULL, NULL, 0 },
-	{ {"T_reply_code", sizeof("T_reply_code")-1}, 901,
+	{ str_const_init("T_reply_code"), 901,
 		pv_get_tm_reply_code, NULL, NULL, NULL, NULL, 0 },
-	{ {"T_ruri",       sizeof("T_ruri")-1},       902,
+	{ str_const_init("T_ruri"),       902,
 		pv_get_tm_ruri,       NULL, NULL, NULL, NULL, 0 },
-	{ {"bavp",         sizeof("bavp")-1},         903,
+	{ str_const_init("bavp"),         903,
 		pv_get_tm_branch_avp, pv_set_tm_branch_avp,
 		pv_parse_avp_name, pv_parse_index, NULL, 0 },
-	{ {"T_fr_timeout", sizeof("T_fr_timeout")-1}, 904,
+	{ str_const_init("T_fr_timeout"), 904,
 		pv_get_tm_fr_timeout, pv_set_tm_fr_timeout,
 		NULL, NULL, NULL, 0 },
-	{ {"T_fr_inv_timeout", sizeof("T_fr_inv_timeout")-1}, 905,
+	{ str_const_init("T_fr_inv_timeout"), 905,
 		pv_get_tm_fr_inv_timeout, pv_set_tm_fr_inv_timeout,
 		NULL, NULL, NULL, 0 },
-	{ {"T_id",         sizeof("T_id")-1},         906,
+	{ str_const_init("T_id"),         906,
 		pv_get_t_id, NULL, NULL, NULL, NULL, 0 },
+	{ str_const_init("T_branch_last_reply_code"), 907,
+		pv_get_tm_branch_reply_code, NULL,
+		NULL, pv_parse_index, NULL, 0 },
 	{ {0, 0}, 0, 0, 0, 0, 0, 0, 0 }
 };
 
@@ -940,6 +955,30 @@ static int mod_init(void)
 	if (tm_init_cluster() < 0) {
 		LM_ERR("cannot initialize cluster support for transactions!\n");
 		LM_WARN("running without cluster support for transactions!\n");
+	}
+
+	if (tm_local_reply_route_s)
+	{
+		tm_local_reply_route = ref_script_route_by_name(
+			tm_local_reply_route_s,
+			sroutes->onreply, RT_NO, REQUEST_ROUTE, 0);
+		if (!ref_script_route_is_valid(tm_local_reply_route))
+		{
+			LM_ERR("route <%s> does not exist\n",tm_local_reply_route_s);
+			return -1;
+		}
+	}
+
+	if (tm_local_request_route_s)
+	{
+		tm_local_request_route = ref_script_route_by_name(
+			tm_local_request_route_s,
+			sroutes->request, RT_NO, REQUEST_ROUTE, 0);
+		if (!ref_script_route_is_valid(tm_local_request_route))
+		{
+			LM_ERR("route <%s> does not exist\n",tm_local_request_route_s);
+			return -1;
+		}
 	}
 
 	return 0;
@@ -1749,6 +1788,43 @@ static int pv_get_tm_reply_code(struct sip_msg *msg, pv_param_t *param,
 	}
 
 	LM_DBG("reply code is <%d>\n",code);
+
+	res->rs.s = int2str( code, &res->rs.len);
+
+	res->ri = code;
+	res->flags = PV_VAL_STR|PV_VAL_INT|PV_TYPE_INT;
+	return 0;
+}
+
+static int pv_get_tm_branch_reply_code(struct sip_msg *msg, pv_param_t *param,
+		pv_value_t *res)
+{
+	struct cell *t;
+	int code;
+	int branch;
+	int idxf;
+
+	if(msg==NULL || res==NULL)
+		return -1;
+
+	/* first get the transaction */
+	if (!(t = get_t()) || t == T_UNDEFINED)
+		return pv_get_null(msg, param, res);
+
+	if (param->pvi.type != 0) {
+		if(pv_get_spec_index(msg, param, &branch, &idxf)!=0 ||
+				idxf == PV_IDX_APPEND || idxf == PV_IDX_APPEND) {
+			LM_ERR("invalid index\n");
+			return -1;
+		}
+	} else {
+		branch = _tm_branch_index;
+	}
+
+	/* it is not our job to find a proper branch, if not explicit asked for */
+	code = t->uac[branch].last_received;
+
+	LM_DBG("reply code for branch %d is <%d>\n", branch, code);
 
 	res->rs.s = int2str( code, &res->rs.len);
 

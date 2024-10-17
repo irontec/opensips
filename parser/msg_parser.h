@@ -88,7 +88,7 @@ enum request_method {
 };
 
 #define FL_FORCE_RPORT       (1<<0)  /* force rport (top via) */
-#define FL_FORCE_ACTIVE      (1<<1)  /* force active SDP */
+#define FL_REPLY_TO_VIA      (1<<1)  /* force replying to VIA ip:port */
 #define FL_FORCE_LOCAL_RPORT (1<<2)  /* force local rport (local via) */
 #define FL_SDP_IP_AFS        (1<<3)  /* SDP IP rewritten */
 #define FL_SDP_PORT_AFS      (1<<4)  /* SDP port rewritten */
@@ -128,6 +128,8 @@ enum request_method {
                                       * one, not received */
 #define FL_HAS_ROUTE_LUMP    (1<<22) /* the message had Route headers added
                                       * as lumps */
+#define FL_USE_SIPTRACE_B2B  (1<<23) /* used by tracer to check if the b2b
+                                      * tracing was enabled */
 
 /* define the # of unknown URI parameters to parse */
 #define URI_MAX_U_PARAMS 10
@@ -276,6 +278,9 @@ struct sip_msg {
 	struct hdr_field* min_expires;
 	struct hdr_field* feature_caps;
 	struct hdr_field* replaces;
+	struct hdr_field* security_client;
+	struct hdr_field* security_server;
+	struct hdr_field* security_verify;
 
 	struct sip_msg_body *body;
 
@@ -298,7 +303,7 @@ struct sip_msg {
 	unsigned int ruri_bflags; /* per-branch flags for RURI*/
 
 	/* force sending on this socket */
-	struct socket_info* force_send_socket;
+	const struct socket_info* force_send_socket;
 
 	/* path vector to generate Route hdrs */
 	str path_vec;
@@ -357,9 +362,16 @@ extern int via_cnt;
 
 int parse_msg(char* buf, unsigned int len, struct sip_msg* msg);
 
-int parse_headers(struct sip_msg* msg, hdr_flags_t flags, int next);
+#define parse_headers(msg, flags,next) 	parse_headers_aux(msg,flags,next, 1)
 
-char* get_hdr_field(char* buf, char* end, struct hdr_field* hdr);
+int parse_headers_aux(struct sip_msg* msg, hdr_flags_t flags, int next, int sip_well_known_parse);
+
+#define get_hdr_field(buf,end,hdr)	get_hdr_field_aux(buf,end,hdr,1)
+
+char* get_hdr_field_aux(char* buf, char* end, struct hdr_field* hdr, int sip_well_known_parse);
+
+/* add DEL lumps for all headers matching the given @hdr */
+int delete_headers(struct sip_msg *msg, struct hdr_field *hdr);
 
 void free_sip_msg(struct sip_msg* msg);
 
@@ -492,6 +504,23 @@ inline static struct hdr_field *get_header_by_name( struct sip_msg *msg,
 	}
 	return NULL;
 }
+
+
+#define get_next_header_by_static_name(_hdr, _name) \
+		get_next_header_by_name(_hdr, _name, sizeof(_name)-1)
+inline static struct hdr_field *get_next_header_by_name(
+						struct hdr_field *first, char *s, unsigned int len)
+{
+	struct hdr_field *hdr;
+
+	for( hdr=first->next ; hdr ; hdr=hdr->next ) {
+		if(len==hdr->name.len && strncasecmp(hdr->name.s,s,len)==0)
+			return hdr;
+	}
+	return NULL;
+}
+
+
 
 
 /*

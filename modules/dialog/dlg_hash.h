@@ -24,6 +24,7 @@
 #define _DIALOG_DLG_HASH_H_
 
 #include "../../locking.h"
+#include "../../rw_locking.h"
 #include "../../context.h"
 #include "../../mi/mi.h"
 #include "../../lib/dbg/struct_hist.h"
@@ -110,7 +111,7 @@ struct dlg_leg {
 	struct dlg_leg_cseq_map *cseq_maps; /* used when translating ACKs */
 	char reply_received;
 	char reinvite_confirmed;
-	struct socket_info *bind_addr;
+	const struct socket_info *bind_addr;
 };
 
 #define leg_is_answered(dlg_leg) ((dlg_leg)->tag.s)
@@ -141,9 +142,11 @@ struct dlg_cell
 	unsigned int         lifetime;
 	unsigned short       lifetime_dirty; /* 1 if lifetime timer should
 	                                      * be updated */
-	unsigned short       locked_by;   /* holds the ID of the process locking
-	                                   * the dialog (if the case) while
-	                                   * calling a callback */
+
+	/* holds the ID of the process holding the dialog bucket lock (or 0)
+	 * when either working with .profile_links list or running dlg callbacks */
+	unsigned short       locked_by;
+
 	unsigned int         start_ts;    /* start time  (absolute UNIX ts)*/
 	unsigned int         flags;
 	unsigned int         from_rr_nb;
@@ -167,6 +170,7 @@ struct dlg_cell
 	struct dlg_head_cbl  cbs;
 	struct dlg_profile_link *profile_links;
 	struct dlg_val       *vals;
+	rw_lock_t            *vals_lock;
 	str                  shtag;
 
 	struct script_route_ref  *rt_on_answer;
@@ -405,7 +409,7 @@ struct dlg_cell* build_new_dlg(str *callid, str *from_uri,
 int dlg_clone_callee_leg(struct dlg_cell *dlg, int cloned_leg_idx);
 
 int dlg_update_leg_info(int leg_idx, struct dlg_cell *dlg, str* tag, str *rr,
-		str *contact, str *adv_ct, str *cseq, struct socket_info *sock,
+		str *contact, str *adv_ct, str *cseq, const struct socket_info *sock,
 		str *mangled_from,str *mangled_to,str *in_sdp, str *out_sdp);
 
 int dlg_update_cseq(struct dlg_cell *dlg, unsigned int leg, str *cseq,

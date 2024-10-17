@@ -53,6 +53,7 @@
 #include "../../msg_translator.h"
 #include "../../mod_fix.h"
 #include "../../trim.h"
+#include "../../lib/cJSON.h"
 
 #include "codecs.h"
 #include "list_hdr.h"
@@ -87,6 +88,7 @@ static int get_glob_headers_values(struct sip_msg* msg, str* pattern,pv_spec_t* 
 static int remove_hf_match_f(struct sip_msg* msg, void* pattern, int is_regex);
 static int is_present_hf(struct sip_msg* msg, void* _match_hf);
 static int append_to_reply_f(struct sip_msg* msg, str* key);
+static int append_body_to_reply_f(struct sip_msg* msg, str* key);
 static int append_hf(struct sip_msg *msg, str *str1, void *str2);
 static int insert_hf(struct sip_msg *msg, str *str1, void *str2);
 static int append_urihf(struct sip_msg *msg, str *str1, str *str2);
@@ -100,6 +102,7 @@ static int add_body_part_f(struct sip_msg *msg, str *body, str *mime,
 static int get_updated_body_part_f(struct sip_msg *msg, int *type,pv_spec_t* out);
 static int is_audio_on_hold_f(struct sip_msg *msg);
 static int w_sip_validate(struct sip_msg *msg, void *flags, pv_spec_t* err_txt);
+static int w_sip_to_json(struct sip_msg *msg, pv_spec_t* out_json);
 
 static int fixup_parse_hname(void** param);
 
@@ -119,6 +122,10 @@ static int mod_init(void);
 
 static const cmd_export_t cmds[]={
 	{"append_to_reply",  (cmd_function)append_to_reply_f, {
+		{CMD_PARAM_STR, 0, 0}, {0, 0, 0}},
+		REQUEST_ROUTE|FAILURE_ROUTE|BRANCH_ROUTE|ERROR_ROUTE},
+
+	{"append_body_to_reply",  (cmd_function)append_body_to_reply_f, {
 		{CMD_PARAM_STR, 0, 0}, {0, 0, 0}},
 		REQUEST_ROUTE|FAILURE_ROUTE|BRANCH_ROUTE|ERROR_ROUTE},
 
@@ -297,6 +304,9 @@ static const cmd_export_t cmds[]={
 	        {CMD_PARAM_VAR, 0, 0},
 	        {CMD_PARAM_VAR, 0, 0},
 		{0, 0, 0}},
+		REQUEST_ROUTE|ONREPLY_ROUTE|FAILURE_ROUTE|BRANCH_ROUTE|LOCAL_ROUTE},
+	{"sip_to_json",     (cmd_function)w_sip_to_json, {
+		{CMD_PARAM_VAR, 0, 0}, {0, 0, 0}},
 		REQUEST_ROUTE|ONREPLY_ROUTE|FAILURE_ROUTE|BRANCH_ROUTE|LOCAL_ROUTE},
 
 	{0,0,{{0,0,0}},0}
@@ -536,6 +546,27 @@ static int append_to_reply_f(struct sip_msg* msg, str* key)
 	{
 		LM_ERR("unable to add lump_rl\n");
 		return -1;
+	}
+
+	return 1;
+}
+
+
+static int append_body_to_reply_f(struct sip_msg* msg, str* body)
+{
+	struct lump_rpl *l;
+
+	l = get_lump_rpl( msg, LUMP_RPL_BODY);
+	if (l) {
+		if (replace_lump_rpl(l, body->s, body->len, LUMP_RPL_BODY)!=0) {
+			LM_ERR("unable to replace existing body lump_rl\n");
+			return -1;
+		}
+	} else {
+		if (add_lump_rpl( msg, body->s, body->len, LUMP_RPL_BODY)==NULL) {
+			LM_ERR("unable to create new body lump_rl\n");
+			return -1;
+		}
 	}
 
 	return 1;
@@ -2045,4 +2076,101 @@ static int get_glob_headers_values(struct sip_msg* msg, str* pattern,pv_spec_t* 
 		cnt++;
 	}
 	return cnt==0 ? -1 : 1;
+}
+
+static int w_sip_to_json(struct sip_msg *msg, pv_spec_t* out_json)
+{
+	cJSON *ret=NULL, *aux, *aux2, *arr;
+	struct hdr_field* it;
+	char hdr_name_buf[255];
+	str json_ret = {0,0};
+	pv_value_t pv_val;
+
+	if (!msg) {
+		LM_ERR("No SIP msg, can't convert to json\n");
+		return -1;
+	}	
+
+	if(parse_headers(msg, HDR_EOH_F, 0) < 0) {
+		LM_ERR("Failed to parse all SIP msg \n");
+		return -1;
+	}
+
+	ret = cJSON_CreateObject();
+
+	/* first line */
+	aux = cJSON_CreateStr(msg->buf,msg->first_line.len); 
+	if (!aux) {
+		LM_ERR("Failed to create 1st line json \n");
+		goto error;
+	}
+
+	cJSON_AddItemToObject(ret,"first_line",aux);
+
+	/* headers */
+	aux = cJSON_CreateObject();
+	if (!aux) {
+		LM_ERR("Failed to create headers json \n");
+		goto error;
+	}
+
+	for (it=msg->headers;it;it=it->next) {
+		memcpy(hdr_name_buf,it->name.s,it->name.len);
+		hdr_name_buf[it->name.len] = 0;
+
+		arr = cJSON_GetObjectItem(aux, hdr_name_buf);
+		if (!arr) {
+			arr = cJSON_CreateArray();
+			cJSON_AddItemToObject(aux,hdr_name_buf,arr);
+		}
+
+		aux2 =  cJSON_CreateStr(it->body.s,it->body.len);
+		if (!aux2) {
+			LM_ERR("Failed to create individual header json\n");
+			goto error;
+		}
+
+		cJSON_AddItemToArray(arr,aux2);
+	}
+	cJSON_AddItemToObject(ret,"headers",aux);
+
+	/* body */
+	if (msg->body) {
+		aux = cJSON_CreateStr(msg->body->body.s,msg->body->body.len); 
+		if (!aux) {
+			LM_ERR("Failed to create body json\n");
+			goto error;
+		}
+		cJSON_AddItemToObject(ret,"body",aux);
+	}
+
+	json_ret.s = cJSON_Print(ret);
+	if (!json_ret.s) {
+		LM_ERR("Failed to print json to string obj\n");
+		goto error;
+	}
+
+	cJSON_Minify(json_ret.s);
+	json_ret.len = strlen(json_ret.s);
+
+	pv_val.flags = PV_VAL_STR;
+	pv_val.rs = json_ret;
+
+	if (pv_set_value(msg,out_json,0,&pv_val) != 0) {
+		LM_ERR("Failed to set out json pvar \n");
+		goto error;
+	} 
+
+	pkg_free(json_ret.s);
+	cJSON_Delete(ret);
+
+	return 1;
+
+error:
+	if (ret)
+		cJSON_Delete(ret);
+	if (json_ret.s)
+		pkg_free(json_ret.s);
+
+	return -1;
 }

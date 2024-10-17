@@ -21,11 +21,7 @@
 %global _with_cachedb_mongodb 1
 %endif
 
-%if 0%{?rhel} > 7 || 0%{?fedora} > 23
-%global _without_aaa_radius 1
-%endif
-
-%if 0%{?rhel} > 7
+%if 0%{?rhel} > 7 || 0%{?fedora} > 36
 %global _with_python3 1
 %endif
 
@@ -41,11 +37,11 @@
 %global _with_wolfssl 1
 %endif
 
-%global EXCLUDE_MODULES %{!?_with_auth_jwt:auth_jwt} %{!?_with_cachedb_cassandra:cachedb_cassandra} %{!?_with_cachedb_couchbase:cachedb_couchbase} %{!?_with_cachedb_mongodb:cachedb_mongodb} %{!?_with_cachedb_redis:cachedb_redis} %{!?_with_db_oracle:db_oracle} %{!?_with_osp:osp} %{!?_with_sngtc:sngtc} %{!?_with_aaa_diameter:aaa_diameter} %{?_without_aaa_radius:aaa_radius} %{?_without_db_perlvdb:db_perlvdb} %{?_without_snmpstats:snmpstats} %{!?_with_wolfssl:tls_wolfssl}
+%global EXCLUDE_MODULES %{!?_with_auth_jwt:auth_jwt} %{!?_with_cachedb_cassandra:cachedb_cassandra} %{!?_with_cachedb_couchbase:cachedb_couchbase} %{!?_with_cachedb_mongodb:cachedb_mongodb} %{!?_with_cachedb_redis:cachedb_redis} %{!?_with_db_oracle:db_oracle} %{!?_with_osp:osp} %{!?_with_sngtc:sngtc} %{!?_with_aaa_diameter:aaa_diameter aka_av_diameter} %{?_without_db_perlvdb:db_perlvdb} %{?_without_snmpstats:snmpstats} %{!?_with_wolfssl:tls_wolfssl} launch_darkly http2d
 
 Summary:  Very fast and configurable SIP server
 Name:     opensips
-Version:  3.4.5
+Version:  3.5.1
 Release:  1%{?dist}
 License:  GPLv2+
 Group:    System Environment/Daemons
@@ -73,6 +69,7 @@ BuildRequires:  openssl-devel
 BuildRequires:  expat-devel
 BuildRequires:  xmlrpc-c-devel
 BuildRequires:  libconfuse-devel
+BuildRequires:  libmnl-devel
 %if 0%{?rhel} > 0 && 0%{?rhel} < 8
 BuildRequires:  db4-devel
 %else
@@ -87,6 +84,9 @@ BuildRequires:  pcre-devel
 BuildRequires:  python3-devel
 %else
 BuildRequires:  python-devel
+%endif
+%if 0%{?fedora} > 38
+BuildRequires:  python3-setuptools
 %endif
 %if 0%{?fedora} > 16 || 0%{?rhel} > 6
 BuildRequires:  systemd-units
@@ -379,6 +379,20 @@ per second even on low-budget hardware.
 .
 This package provides support for SIP Identity (see RFC 4474).
 
+%package  ipsec-module
+Summary:  IPSec proto module for OpenSIPS
+Group:    System Environment/Daemons
+Requires: %{name} = %{version}-%{release}
+Requires: libmnl
+BuildRequires:  libmnl-devel
+
+%description  ipsec-module
+OpenSIPS is a very fast and flexible SIP (RFC3261)
+server. Written entirely in C, OpenSIPS can handle thousands calls
+per second even on low-budget hardware.
+.
+This package provides IMS IPSec connections (see TS 33.203).
+
 %package  jabber-module
 Summary:  Jabber gateway module for OpenSIPS
 Group:    System Environment/Daemons
@@ -634,9 +648,7 @@ module to publish RabbitMQ messages to a RabbitMQ server.
 Summary:  Radius modules for OpenSIPS
 Group:    System Environment/Daemons
 Requires: %{name} = %{version}-%{release}
-%if 0%{!?_without_aaa_radius:1}
-BuildRequires:  radiusclient-ng-devel
-%endif
+BuildRequires:  radcli-devel
 
 %description  radius-modules
 OpenSIPS is a very fast and flexible SIP (RFC3261)
@@ -1015,9 +1027,7 @@ fi
 %attr(755,root,root) %{_initrddir}/opensips
 %endif
 
-%if 0%{!?_without_aaa_radius:1}
 %config(noreplace) %{_sysconfdir}/opensips/dictionary.opensips
-%endif
 %config(noreplace) %{_sysconfdir}/sysconfig/%{name}
 %attr(640,%{name},%{name}) %config(noreplace) %{_sysconfdir}/opensips/opensips.cfg
 %attr(640,%{name},%{name}) %config(noreplace) %{_sysconfdir}/opensips/scenario_callcenter.xml
@@ -1049,14 +1059,13 @@ fi
 %doc docdir/AUTHORS
 %doc docdir/NEWS
 %doc docdir/README
-%doc docdir/README-MODULES
 %doc COPYING
 
 %{_libdir}/opensips/modules/acc.so
 %{_libdir}/opensips/modules/alias_db.so
 %{_libdir}/opensips/modules/auth_aaa.so
 %{_libdir}/opensips/modules/auth_db.so
-%{_libdir}/opensips/modules/avpops.so
+%{_libdir}/opensips/modules/sqlops.so
 %{_libdir}/opensips/modules/b2b_entities.so
 %{_libdir}/opensips/modules/b2b_logic.so
 %{_libdir}/opensips/modules/b2b_sca.so
@@ -1106,6 +1115,7 @@ fi
 %{_libdir}/opensips/modules/mi_fifo.so
 %{_libdir}/opensips/modules/mi_script.so
 %{_libdir}/opensips/modules/mid_registrar.so
+%{_libdir}/opensips/modules/mqueue.so
 %{_libdir}/opensips/modules/msilo.so
 %{_libdir}/opensips/modules/nat_traversal.so
 %{_libdir}/opensips/modules/nathelper.so
@@ -1116,6 +1126,7 @@ fi
 %{_libdir}/opensips/modules/proto_bin.so
 %{_libdir}/opensips/modules/proto_bins.so
 %{_libdir}/opensips/modules/proto_hep.so
+%{_libdir}/opensips/modules/proto_ipsec.so
 %{_libdir}/opensips/modules/proto_smpp.so
 %{_libdir}/opensips/modules/proto_ws.so
 %{_libdir}/opensips/modules/qos.so
@@ -1154,7 +1165,7 @@ fi
 %doc docdir/README.alias_db
 %doc docdir/README.auth_aaa
 %doc docdir/README.auth_db
-%doc docdir/README.avpops
+%doc docdir/README.sqlops
 %doc docdir/README.b2b_entities
 %doc docdir/README.b2b_logic
 %doc docdir/README.b2b_sca
@@ -1202,6 +1213,7 @@ fi
 %doc docdir/README.mi_fifo
 %doc docdir/README.mi_script
 %doc docdir/README.mid_registrar
+%doc docdir/README.mqueue
 %doc docdir/README.msilo
 %doc docdir/README.nat_traversal
 %doc docdir/README.nathelper
@@ -1211,6 +1223,7 @@ fi
 %doc docdir/README.pike
 %doc docdir/README.proto_bin
 %doc docdir/README.proto_hep
+%doc docdir/README.proto_ipsec
 %doc docdir/README.proto_smpp
 %doc docdir/README.proto_ws
 %doc docdir/README.qos
@@ -1253,8 +1266,10 @@ fi
 
 %files auth-modules
 %{_libdir}/opensips/modules/auth.so
+%{_libdir}/opensips/modules/auth_aka.so
 %{_libdir}/opensips/modules/uac_auth.so
 %doc docdir/README.auth
+%doc docdir/README.auth_aka
 %doc docdir/README.uac_auth
 
 %files berkeley-bin
@@ -1306,7 +1321,9 @@ fi
 %if 0%{?_with_aaa_diameter:1}
 %files diameter-module
 %{_libdir}/opensips/modules/aaa_diameter.so
+%{_libdir}/opensips/modules/aka_av_diameter.so
 %doc docdir/README.aaa_diameter
+%doc docdir/README.aka_av_diameter
 %endif
 
 %files emergency-module
@@ -1331,6 +1348,10 @@ fi
 %files identity-module
 %{_libdir}/opensips/modules/identity.so
 %doc docdir/README.identity
+
+%files ipsec-module
+%{_libdir}/opensips/modules/proto_ipsec.so
+%doc docdir/README.proto_ipsec
 
 %files jabber-module
 %{_libdir}/opensips/modules/jabber.so
@@ -1443,6 +1464,8 @@ fi
 %doc docdir/README.presence_dialoginfo
 %{_libdir}/opensips/modules/presence_dfks.so
 %doc docdir/README.presence_dfks
+%{_libdir}/opensips/modules/presence_reginfo.so
+%doc docdir/README.presence_reginfo
 %{_libdir}/opensips/modules/presence_mwi.so
 %doc docdir/README.presence_mwi
 %{_libdir}/opensips/modules/presence_xcapdiff.so
@@ -1457,6 +1480,8 @@ fi
 %doc docdir/README.pua_dialoginfo
 %{_libdir}/opensips/modules/pua_mi.so
 %doc docdir/README.pua_mi
+%{_libdir}/opensips/modules/pua_reginfo.so
+%doc docdir/README.pua_reginfo
 %{_libdir}/opensips/modules/pua_usrloc.so
 %doc docdir/README.pua_usrloc
 %{_libdir}/opensips/modules/pua_xmpp.so
@@ -1487,10 +1512,8 @@ fi
 %files radius-modules
 %{_libdir}/opensips/modules/peering.so
 %doc docdir/README.peering
-%if 0%{!?_without_aaa_radius:1}
 %{_libdir}/opensips/modules/aaa_radius.so
 %doc docdir/README.aaa_radius
-%endif
 
 %if 0%{?_with_cachedb_redis:1}
 %files redis-module
@@ -1587,26 +1610,18 @@ fi
 
 
 %changelog
-* Thu Apr 18 2024 Liviu Chircu <liviu@opensips.org> - 3.4.5-1
-- OpenSIPS minor stable release: 3.4.5-1
+* Wed Aug 21 2024 Liviu Chircu <liviu@opensips.org> - 3.5.1-1
+- OpenSIPS minor stable release: 3.5.1-1
 
-* Wed Feb 21 2024 Liviu Chircu <liviu@opensips.org> - 3.4.4-1
-- OpenSIPS minor stable release: 3.4.4-1
+* Mon Aug 19 2024 Razvan Crainea <razvan@opensips.org> - 3.5.0-1
+- Replace deprecated dependency for radius modules
 
-* Wed Dec 20 2023 Liviu Chircu <liviu@opensips.org> - 3.4.3-1
-- OpenSIPS minor stable release: 3.4.3-1
+* Thu Jul 25 2024 Liviu Chircu <liviu@opensips.org> - 3.5.0-1
+- OpenSIPS minor stable release: 3.5.0-1
 
-* Wed Oct 18 2023 Liviu Chircu <liviu@opensips.org> - 3.4.2-1
-- OpenSIPS minor stable release: 3.4.2-1
-
-* Thu Aug 31 2023 Liviu Chircu <liviu@opensips.org> - 3.4.1-1
-- OpenSIPS minor stable release: 3.4.1-1
-
-* Wed Jul 19 2023 Liviu Chircu <liviu@opensips.org> - 3.4.0-1
-- OpenSIPS 3.4.0 stable release: 3.4.0-1
-
-* Tue Jun 20 2023 Liviu Chircu <liviu@opensips.org> - 3.4.0-rc1-1
-- OpenSIPS 3.4 new release candidate: 3.4.0-rc1-1
+* Sat May 18 2024 Nick Altmann <nick@altmann.pro> - 3.5.0-1
+- Specification updated for opensips 3.5
+- New modules: aka_av_diameter, auth_aka, mqueue, presence_reginfo, proto_ipsec, pua_reginfo
 
 * Thu May 18 2023 Nick Altmann <nick@altmann.pro> - 3.4.0-1
 - Specification updated for opensips 3.4

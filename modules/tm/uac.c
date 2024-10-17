@@ -76,7 +76,7 @@ int pass_provisional_replies = 0;
 
 /* T holder for the last local transaction */
 struct cell** last_localT;
-
+static struct sip_msg dummy_msg;
 
 /*
  * Initialize UAC
@@ -84,7 +84,7 @@ struct cell** last_localT;
 int uac_init(void)
 {
 	str src[3];
-	struct socket_info *si;
+	const struct socket_info *si;
 
 	if (RAND_MAX < TM_TABLE_ENTRIES) {
 		LM_WARN("uac does not spread across the whole hash table\n");
@@ -171,7 +171,7 @@ static int run_local_route( struct cell *new_cell, char **buf, int *buf_len,
 	struct retr_buf *request;
 	struct proxy_l *new_proxy = NULL;
 	union sockaddr_union new_to_su;
-	struct socket_info *new_send_sock;
+	const struct socket_info *new_send_sock;
 	unsigned short dst_changed;
 	char *buf1=NULL, *sipmsg_buf;
 	int buf_len1, sip_msg_len;
@@ -551,6 +551,21 @@ int t_uac(str* method, str* headers, str* body, dlg_t* dialog,
 	if (request->buffer.s==NULL) {
 		request->buffer.s = buf;
 		request->buffer.len = buf_len;
+	}
+
+	if (ref_script_route_is_valid(tm_local_request_route)) {
+		LM_DBG("Found Local-Request Route...\n");
+		memset(&dummy_msg, 0, sizeof(struct sip_msg));
+		dummy_msg.buf = request->buffer.s;
+		dummy_msg.len = request->buffer.len;
+
+		if (parse_msg(request->buffer.s, request->buffer.len, &dummy_msg)==0){
+			LM_DBG("Parsed Message, executing Local-Request Route "
+				"with Message...\n");
+			run_top_route(sroutes->request[tm_local_request_route->idx],
+				&dummy_msg);
+		}
+		free_sip_msg(&dummy_msg);
 	}
 
 	/* for DNS based failover, copy the DNS proxy into transaction

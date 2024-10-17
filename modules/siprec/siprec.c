@@ -77,12 +77,11 @@ static const param_export_t params[] = {
 };
 
 static const pv_export_t vars[] = {
-	{ {"siprec", sizeof("siprec")-1}, 1000,
+	{ str_const_init("siprec"), 1000,
 		pv_get_siprec, pv_set_siprec, pv_parse_siprec,
 		0, 0, 0 },
 	{ {0, 0}, 0, 0, 0, 0, 0, 0, 0 }
 };
-
 
 /* module exports */
 struct module_exports exports = {
@@ -142,7 +141,6 @@ static int mod_preinit(void)
 
 	return 0;
 }
-
 
 /**
  * init module function

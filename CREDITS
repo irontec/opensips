@@ -1,25 +1,25 @@
 	This is a credits-file of people that have contributed with code
-	to the OpenSIPS 3.4 release, sorted by last name.  The fields are:
+	to the OpenSIPS 3.5 release, sorted by last name.  The fields are:
 	name (N), email (E).
 	Cheers,
-                                                  2023, May 17
+                                                  2024, May 09
 
 ----------
-
-N: Gohar Ahmed
-E: gahmed@saevolgo.ca
 
 N: Nick Altmann
 E: nick@altmann.pro
 
+N: Rick Barenthin
+E: rick@ng-voice.com
+
+N: Dudu Ben Moshe
+E: dudu@voicenter.co.il
+
+N: Carsten Bock
+E: carsten@ng-voice.com
+
 N: Norm Brandinger
 E: n.brandinger@gmail.com
-
-N: Ryan Bullock
-E: ryan@piratel.com
-
-N: John Burke
-E: john@voxtelesys.net
 
 N: Liviu Chircu
 E: liviu@opensips.org
@@ -27,23 +27,26 @@ E: liviu@opensips.org
 N: Razvan Crainea
 E: razvan@opensips.org
 
-N: Callum Guy
-E: callum.guy@x-on.co.uk
+N: T Cresson
+E: tcresson@keyyo.com
 
-N: Jasper Hafkenscheid
-E: jasper.hafkenscheid@wearespindle.com
-
-N: Truong Hua
-E: truong.hua@youthdev.net
+N: Sylvain Daste
+E: dastesylvain@gmail.com
 
 N: Bogdan-Andrei Iancu
 E: bogdan@opensips.org
 
-N: David Korczynski
-E: david@adalogics.com
+N: Giedrius J
+E: giedriusj1@gmail.com
 
 N: Peter Lemenkov
 E: lemenkov@gmail.com
+
+N: Seyed Mehran Siadati
+E: siadatism@gmail.com
+
+N: Stefan-Cristian Mititelu
+E: stefan-cristian.mititelu@1and1.ro
 
 N: Vlad Paiu
 E: vladpaiu@opensips.org
@@ -54,6 +57,9 @@ E: vladp@opensips.org
 N: Ovidiu Sas
 E: osas@voipembedded.com
 
+N: Zheng Sh
+E: zhengsh@ti-net.com.cn
+
 N: Maksym Sobolyev
 E: sobomax@sippysoft.com
 
@@ -63,32 +69,9 @@ E: james@incoherency.co.uk
 N: Bence Szigeti
 E: bence.szigeti@gohyda.com
 
-N: Mayama Takeshi
-E: mayamatakeshi@gmail.com
-
-N: David Trihy
-E: david.trihy@genesys.com
+N: Monkey Tester
+E: 57145271+Integration-IT@users.noreply.github.com
 
 N: Shanee Vanstone
-E: shanee@ifnotequal.com
+E: s.vanstone@resilientplc.com
 
-N: DD Wang
-E: wangdd@welljoint.com
-
-N: Gang Zhuo
-E: gang.zhuo@gmail.com
-
-N: Giedrius github
-E: giedriusj1@gmail.com
-
-N: ihsinme github
-E: ihsinme@gmail.com
-
-N: importos github
-E: m.j_banitaba@yahoo.com
-
-N: nexbridge github
-E: nexbridge@sipdomain.invalid
-
-N: okhowang github
-E: okhowang@tencent.com

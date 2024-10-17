@@ -357,8 +357,8 @@ str* b2b_generate_key(unsigned int hash_index, unsigned int local_index)
 	str* b2b_key;
 	int len;
 
-	len = sprintf(buf, "%s.%d.%d.%ld.%d", b2b_key_prefix.s, hash_index, local_index,
-		startup_time+get_ticks(), rand());
+	len = sprintf(buf, "%s.%d.%d.%lld.%d", b2b_key_prefix.s, hash_index, local_index,
+		(long long)(startup_time+get_ticks()), rand());
 
 	b2b_key = (str*)pkg_malloc(sizeof(str)+ len);
 	if(b2b_key== NULL)
@@ -1177,34 +1177,18 @@ logic_notify:
 				{
 					/* We have an UAC ongoing transaction in the dialog
 					 * -> reject with 491 Request Pending */
-					if (method_value != METHOD_BYE) {
-						/* send reply */
-						LM_DBG("Received a request while having an ongoing "
-							"outbound/UAC one\n");
-						str text = str_init("Request Pending");
-						if(tmb.t_reply_with_body( tm_tran, 491,
-						&text, 0, 0, &to_tag) < 0)
-						{
-							LM_ERR("failed to send reply with tm\n");
-						}
-						LM_DBG("Sent reply [491] and unreffed the cell %p\n",
-							tm_tran);
-					} else {
-						LM_DBG("Received BYE while having an ongoing "
-							"outbound/UAC transaction\n");
-						str text_ok = str_init("OK");
-						if(tmb.t_reply_with_body( tm_tran, 200,
-						&text_ok, 0, 0, &to_tag) < 0)
-						{
-							LM_ERR("failed to send reply with tm\n");
-						}
-						LM_DBG("Sent reply [200] and unreffed the cell %p\n",
-							tm_tran);
-
-						tmb.unref_cell(tm_tran); /* for t_newtran() */
-						b2b_cb_flags |= B2B_NOTIFY_FL_TERM_BYE;
-						goto run_cb;
+					/* send reply */
+					LM_DBG("Received a request while having an ongoing "
+						"outbound/UAC one\n");
+					str text = str_init("Request Pending");
+					if(tmb.t_reply_with_body( tm_tran, 491,
+					&text, 0, 0, &to_tag) < 0)
+					{
+						LM_ERR("failed to send reply with tm\n");
 					}
+					LM_DBG("Sent reply [491] and unreffed the cell %p\n",
+						tm_tran);
+
 					tmb.unref_cell(tm_tran); /* for t_newtran() */
 					B2BE_LOCK_RELEASE(table, hash_index);
 					return SCB_DROP_MSG;
@@ -1382,8 +1366,12 @@ run_cb:
 			return SCB_DROP_MSG;
 		}
 	} else {
-		b2b_cback(msg, &b2b_key, B2B_REQUEST, logic_key.s?&logic_key:0,
-			dlg->param, b2b_cb_flags);
+		if (!b2b_cback)
+			LM_DBG("calback not yet registered for [%.*s]\n",
+					(logic_key.s?logic_key.len:0), (logic_key.s?logic_key.s:""));
+		else
+			b2b_cback(msg, &b2b_key, B2B_REQUEST, logic_key.s?&logic_key:0,
+				dlg->param, b2b_cb_flags);
 
 		if(logic_key.s)
 			pkg_free(logic_key.s);
@@ -3686,8 +3674,12 @@ done1:
 			goto error1;
 		}
 	} else {
-		b2b_cback(msg, b2b_key, B2B_REPLY, logic_key.s?&logic_key:0,
-			b2b_param, b2b_cb_flags);
+		if (!b2b_cback)
+			LM_DBG("calback not yet registered for [%.*s]\n",
+					(logic_key.s?logic_key.len:0), (logic_key.s?logic_key.s:""));
+		else
+			b2b_cback(msg, b2b_key, B2B_REPLY, logic_key.s?&logic_key:0,
+				b2b_param, b2b_cb_flags);
 		if(logic_key.s)
 		{
 			pkg_free(logic_key.s);

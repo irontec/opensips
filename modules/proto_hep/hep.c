@@ -654,7 +654,7 @@ static hid_list_p get_hep_id_by_name(str* name, int lock, int ref)
 
 /*
  * New hep uri. Hep uri format
- * ip[:proto]; version=<1/2/3>; transport=<tcp/udp>;"
+ * ip[:proto]; version=<1/2/3>; transport=<tcp/udp/tls>;"
  * ';' can miss; version and transport are interchangeable;
  *
  */
@@ -667,6 +667,10 @@ hid_list_p new_hep_id(str *name, str *uri_s)
 	#define IS_TCP(__url__) ((__url__.len == 3/*O_o*/ \
 				&& (__url__.s[0]|0x20) == 't' && (__url__.s[1]|0x20) == 'c' \
 					&& (__url__.s[2]|0x20) == 'p'))
+
+	#define IS_TLS(__url__) ((__url__.len == 3/*O_o*/ \
+				&& (__url__.s[0]|0x20) == 't' && (__url__.s[1]|0x20) == 'l' \
+					&& (__url__.s[2]|0x20) == 's'))
 
 	hid_list_p el;
 	unsigned int port;
@@ -720,6 +724,8 @@ hid_list_p new_hep_id(str *name, str *uri_s)
 			trans = PROTO_HEP_UDP;
 		} else if (IS_TCP(transport)) {
 			trans = PROTO_HEP_TCP;
+		} else if (IS_TLS(transport)) {
+			trans = PROTO_HEP_TLS;
 		} else {
 			LM_ERR("Bad transport <%.*s>!\n", transport.len, transport.s);
 			return NULL;
@@ -729,7 +735,12 @@ hid_list_p new_hep_id(str *name, str *uri_s)
 	}
 
 	if (trans == PROTO_HEP_TCP && ver < 3) {
-		LM_WARN("TCP not available for HEP version < 3! Falling back to udp!\n");
+		LM_WARN("TCP not available for HEP version < 3! Falling back to UDP!\n");
+		trans = PROTO_HEP_UDP;
+	}
+
+	if (trans == PROTO_HEP_TLS && ver < 3) {
+		LM_WARN("TLS not available for HEP version < 3! Falling back to UDP!\n");
 		trans = PROTO_HEP_UDP;
 	}
 
@@ -763,18 +774,19 @@ hid_list_p new_hep_id(str *name, str *uri_s)
 	LM_DBG("Parsed hep id {%.*s} with ip {%.*s} port {%d}"
 			" transport {%s} hep version {%d}!\n",
 			el->name.len, el->name.s, el->ip.len, el->ip.s,
-			el->port_no, el->transport == PROTO_HEP_TCP ? "tcp" : "udp",
+			el->port_no, el->transport == PROTO_HEP_TCP ? "tcp" : (el->transport == PROTO_HEP_TLS ? "tls" : "udp"),
 			el->version);
 
 	return el;
 
+#undef IS_TLS
 #undef IS_TCP
 #undef IS_UDP
 }
 
 /*
  * parse hep id. Hep id format
- * [<name>]ip[:proto]; version=<1/2/3>; transport=<tcp/udp>;"
+ * [<name>]ip[:proto]; version=<1/2/3>; transport=<tcp/udp/tls>;"
  * ';' can miss; version and transport are interchangeable;
  *
  */
@@ -854,7 +866,7 @@ int parse_hep_id(unsigned int type, void *val)
 /**
  *
  */
-static trace_message create_hep12_message(union sockaddr_union* from_su, union sockaddr_union* to_su,
+static trace_message create_hep12_message(const union sockaddr_union* from_su, const union sockaddr_union* to_su,
 		int net_proto, str* payload, int version)
 {
 	unsigned int totlen=0;
@@ -937,7 +949,7 @@ static trace_message create_hep12_message(union sockaddr_union* from_su, union s
 }
 
 
-static trace_message create_hep3_message(union sockaddr_union* from_su, union sockaddr_union* to_su,
+static trace_message create_hep3_message(const union sockaddr_union* from_su, const union sockaddr_union* to_su,
 		int net_proto, str* payload, int proto)
 {
 	int rc;
@@ -1429,7 +1441,7 @@ out_err:
 /*
  * create message function
  * */
-trace_message create_hep_message(union sockaddr_union* from_su, union sockaddr_union* to_su,
+trace_message create_hep_message(const union sockaddr_union* from_su, const union sockaddr_union* to_su,
 		int net_proto, str* payload, int pld_proto, trace_dest dest)
 {
 	hid_list_p hep_dest = (hid_list_p) dest;
@@ -1666,7 +1678,7 @@ int add_hep_payload(trace_message message, char* pld_name, str* pld_value)
 }
 
 
-int send_hep_message(trace_message message, trace_dest dest, struct socket_info* send_sock)
+int send_hep_message(trace_message message, trace_dest dest, const struct socket_info* send_sock)
 {
 	int len, ret=-1;
 	char* buf=0;

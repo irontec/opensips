@@ -6,7 +6,7 @@
 #
 
 PORTNAME=	opensips
-PORTVERSION=	3.4.5
+PORTVERSION=	3.5.1
 CATEGORIES=	net
 MASTER_SITES=	https://opensips.org/pub/opensips/${PORTVERSION}/
 DISTNAME=	${PORTNAME}-${PORTVERSION}-tls_src
@@ -28,7 +28,7 @@ PLIST_FILES=	sbin/opensips
 
 PLIST_DIRS=	lib/opensips/modules lib/opensips
 
-MODULES=	acc alias_db auth auth_db auth_diameter avpops benchmark \
+MODULES=	acc alias_db auth auth_db auth_diameter sqlops benchmark \
 		cfgutils dbtext dialog dispatcher diversion domain \
 		domainpolicy enum exec flatstore gflags group imc \
 		mangler maxfwd mediaproxy mi_datagram mi_fifo msilo nathelper \

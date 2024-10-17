@@ -25,6 +25,8 @@ Build-Depends: bison,
                liblua5.1-0-dev,
                libmemcached-dev,
                libmicrohttpd-dev,
+               libmnl-dev,
+               libjwt-dev | base-files,
                libbson-dev | base-files,
                libmongoc-dev | base-files,
                libncurses5-dev,
@@ -53,6 +55,55 @@ Package: opensips
 Architecture: any
 Multi-Arch: foreign
 Depends: adduser, python | python-is-python3, ${misc:Depends}, ${shlibs:Depends}
+Suggests: opensips-auth-jwt-module,
+          opensips-auth-modules,
+          opensips-berkeley-module,
+          opensips-carrierroute-module,
+          opensips-cgrates-module,
+          opensips-compression-module,
+          opensips-cpl-module,
+          opensips-dbhttp-module,
+          opensips-dialplan-module,
+          opensips-diameter-module,
+          opensips-emergency-module,
+          opensips-geoip-module,
+          opensips-http-modules,
+          opensips-identity-module,
+          opensips-ipsec-module,
+          opensips-jabber-module,
+          opensips-json-module,
+          opensips-kafka-module,
+          opensips-ldap-modules,
+          opensips-lua-module,
+          opensips-memcached-module,
+          opensips-mongodb-module,
+          opensips-msrp-modules,
+          opensips-mysql-module,
+          opensips-perl-modules,
+          opensips-postgres-module,
+          opensips-presence-modules,
+          opensips-prometheus-module,
+          opensips-python-module,
+          opensips-rabbitmq-modules,
+          opensips-radius-modules,
+          opensips-redis-module,
+          opensips-regex-module,
+          opensips-restclient-module,
+          opensips-sctp-module [linux-any],
+          opensips-siprec-module,
+          opensips-snmpstats-module,
+          opensips-sqlite-module,
+          opensips-stir-shaken-module,
+          opensips-tls-module,
+          opensips-tls-openssl-module,
+          opensips-tls-wolfssl-module,
+          opensips-tlsmgm-module,
+          opensips-unixodbc-module,
+          opensips-uuid-module,
+          opensips-wss-module,
+          opensips-xml-module,
+          opensips-xmlrpc-module,
+          opensips-xmpp-module
 Description: very fast and configurable SIP server
  OpenSIPS is a very fast and flexible SIP (RFC3261)
  server. Written entirely in C, OpenSIPS can handle thousands calls
@@ -101,6 +152,39 @@ Description: HTTP transport layer and Management Interface for OpenSIPS
  .
  This package provides an HTTP transport layer and Management Interface for
  OpenSIPS.
+
+Package: opensips-identity-module
+Architecture: any
+Multi-Arch: same
+Depends: opensips (= ${binary:Version}), ${misc:Depends}, ${shlibs:Depends}
+Description: SIP Identity module for OpenSIPS
+ OpenSIPS is a very fast and flexible SIP (RFC3261)
+ server. Written entirely in C, OpenSIPS can handle thousands calls
+ per second even on low-budget hardware.
+ .
+ This package provides support for SIP Identity (see RFC 4474).
+
+Package: opensips-ipsec-module
+Architecture: any
+Multi-Arch: same
+Depends: opensips (= ${binary:Version}), ${misc:Depends}, ${shlibs:Depends}
+Description: IPSec proto module for OpenSIPS
+ OpenSIPS is a very fast and flexible SIP (RFC3261)
+ server. Written entirely in C, OpenSIPS can handle thousands calls
+ per second even on low-budget hardware.
+ .
+ This package provides IMS IPSec connections (see TS 33.203).
+
+Package: opensips-jabber-module
+Architecture: any
+Multi-Arch: same
+Depends: opensips (= ${binary:Version}), ${misc:Depends}, ${shlibs:Depends}
+Description: Jabber gateway module for OpenSIPS
+ OpenSIPS is a very fast and flexible SIP (RFC3261)
+ server. Written entirely in C, OpenSIPS can handle thousands calls
+ per second even on low-budget hardware.
+ .
+ This package provides the SIP to Jabber translator module for OpenSIPS.
 
 Package: opensips-json-module
 Architecture: any

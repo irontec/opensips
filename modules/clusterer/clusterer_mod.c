@@ -48,6 +48,7 @@ int seed_fb_interval = DEFAULT_SEED_FB_INTERVAL;
 int sync_timeout = DEFAULT_SYNC_TIMEOUT;
 int current_id = -1;
 int db_mode = 1;
+int clusterer_enable_rerouting = 1;
 
 str clusterer_db_url = {NULL, 0};
 str db_table = str_init("clusterer");
@@ -171,6 +172,7 @@ static const param_export_t params[] = {
 		(void*)&shtag_modparam_func},
 	{"sync_packet_size",	INT_PARAM,	&sync_packet_size	},
 	{"dispatch_jobs",		INT_PARAM,	&dispatch_jobs		},
+	{"enable_rerouting",		INT_PARAM,	&clusterer_enable_rerouting	},
 	{0, 0, 0}
 };
 
@@ -230,7 +232,7 @@ static const mi_export_t mi_cmds[] = {
 
 
 static const pv_export_t mod_vars[] = {
-	{ {"cluster.sh_tag", sizeof("cluster.sh_tag")-1}, 1000, var_get_sh_tag,
+	{ str_const_init("cluster.sh_tag"), 1000, var_get_sh_tag,
 		var_set_sh_tag,  var_parse_sh_tag_name , 0, 0, 0 },
 	{ {0, 0}, 0, 0, 0, 0, 0, 0, 0 }
 };

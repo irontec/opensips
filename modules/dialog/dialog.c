@@ -433,35 +433,36 @@ static const mi_export_t mi_cmds[] = {
 		{mi_send_sequential_dlg, {"callid", "mode", "body", 0}},
 		{mi_send_sequential_dlg, {"callid", "method", "body", 0}},
 		{mi_send_sequential_dlg, {"callid", "method", "body", "mode", 0}},
+		{mi_send_sequential_dlg, {"callid", "method", "body", "mode", "headers", 0}},
 		{EMPTY_MI_RECIPE}}
 	},
 	{EMPTY_MI_EXPORT}
 };
 
 static const pv_export_t mod_items[] = {
-	{ {"DLG_count",  sizeof("DLG_count")-1},     1000, pv_get_dlg_count,
+	{ str_const_init("DLG_count"),     1000, pv_get_dlg_count,
 		0,                 0, 0, 0, 0 },
-	{ {"DLG_lifetime",sizeof("DLG_lifetime")-1}, 1000, pv_get_dlg_lifetime,
+	{ str_const_init("DLG_lifetime"), 1000, pv_get_dlg_lifetime,
 		0,                 0, 0, 0, 0 },
-	{ {"DLG_status",  sizeof("DLG_status")-1},   1000, pv_get_dlg_status,
+	{ str_const_init("DLG_status"),   1000, pv_get_dlg_status,
 		0,                 0, 0, 0, 0 },
-	{ {"DLG_dir",     sizeof("DLG_dir")-1},      1000, pv_get_dlg_dir,
+	{ str_const_init("DLG_dir"),      1000, pv_get_dlg_dir,
 		0,                 0, 0, 0, 0},
-	{ {"DLG_flags",   sizeof("DLG_flags")-1},    1000, pv_get_dlg_flags,
+	{ str_const_init("DLG_flags"),    1000, pv_get_dlg_flags,
 		pv_set_dlg_flags,  0, 0, 0, 0 },
-	{ {"dlg_val",     sizeof("dlg_val")-1},      1000, pv_get_dlg_val,
+	{ str_const_init("dlg_val"),      1000, pv_get_dlg_val,
 		pv_set_dlg_val,    pv_parse_name, 0, 0, 0},
-	{ {"DLG_did",     sizeof("DLG_did")-1},      1000, pv_get_dlg_did,
+	{ str_const_init("DLG_did"),      1000, pv_get_dlg_did,
 		0,                 0, 0, 0, 0},
-	{ {"DLG_end_reason",     sizeof("DLG_end_reason")-1},    1000,
+	{ str_const_init("DLG_end_reason"),    1000,
 		pv_get_dlg_end_reason,0,0, 0, 0, 0},
-	{ {"DLG_timeout",        sizeof("DLG_timeout")-1},       1000,
+	{ str_const_init("DLG_timeout"),       1000,
 		pv_get_dlg_timeout, pv_set_dlg_timeout,  0, 0, 0, 0 },
-	{ {"DLG_json",        sizeof("DLG_json")-1},       1000,
+	{ str_const_init("DLG_json"),       1000,
 		pv_get_dlg_json, 0,  0, 0, 0, 0 },
-	{ {"DLG_ctx_json",        sizeof("DLG_ctx_json")-1},       1000,
+	{ str_const_init("DLG_ctx_json"),       1000,
 		pv_get_dlg_ctx_json, 0,  0, 0, 0, 0 },
-	{ {"DLG_del_delay",     sizeof("DLG_del_delay")-1},       1000,
+	{ str_const_init("DLG_del_delay"),       1000,
 		pv_get_dlg_deldelay, pv_set_dlg_deldelay,  0, 0, 0, 0 },
 	{ {0, 0}, 0, 0, 0, 0, 0, 0, 0 }
 };
@@ -1389,7 +1390,6 @@ static int w_get_dlg_info(struct sip_msg *msg, str *attr, pv_spec_t *attr_val,
 	pv_value_t val;
 	int n;
 	unsigned int h;
-	unsigned short aux;
 	int type;
 	int_str isval;
 
@@ -1408,39 +1408,38 @@ static int w_get_dlg_info(struct sip_msg *msg, str *attr, pv_spec_t *attr_val,
 			if ( dlg->state>DLG_STATE_CONFIRMED )
 				continue;
 
-			if (check_dlg_value_unsafe(msg, dlg, key, key_val)==0) {
-				LM_DBG("dialog found, fetching variable\n");
+			lock_start_read(dlg->vals_lock);
+			/* first, the (@key, @key_val) MUST match */
+			if (check_dlg_value(msg, dlg, key, key_val, 0) != 0)
+				goto next_dialog;
 
-				/* XXX - in lack of an unsafe version of fetch_dlg_value */ 
-				aux = dlg->locked_by;
-				dlg->locked_by = process_no;
-
-				if (fetch_dlg_value( dlg, attr, &type, &isval, 0) ) {
-					dlg->locked_by = aux;
-					dlg_unlock( d_table, d_entry);
-					LM_ERR("failed to fetch dialog value <%.*s>\n",
-						(attr)->len, (attr)->s);
-					return -1;
-				} else {
-					if (type == DLG_VAL_TYPE_STR) {
-						val.rs = isval.s;
-						val.flags = PV_VAL_STR;
-					} else {
-						val.ri = isval.n;
-						val.flags = PV_VAL_INT|PV_TYPE_INT;
-					}
-
-					if (attr_val->setf( msg, &attr_val->pvp, 0, &val )!=0) {
-						LM_ERR("Failed to set out pvar \n");
-						dlg->locked_by = aux;
-						dlg_unlock( d_table, d_entry);
-						return -1;
-					} else
-						n++; 
-				}
-	
-				dlg->locked_by = aux;
+			/* success! now fetch @attr into @attr_val, within this dialog */
+			if (fetch_dlg_value_unsafe(dlg, attr, &type, &isval, 0) != 0) {
+				lock_stop_read(dlg->vals_lock);
+				dlg_unlock( d_table, d_entry);
+				LM_ERR("failed to fetch dialog value <%.*s>\n",
+				       (attr)->len, (attr)->s);
+				return -1;
 			}
+
+			if (type == DLG_VAL_TYPE_STR) {
+				val.rs = isval.s;
+				val.flags = PV_VAL_STR;
+			} else {
+				val.ri = isval.n;
+				val.flags = PV_VAL_INT|PV_TYPE_INT;
+			}
+
+			if (attr_val->setf(msg, &attr_val->pvp, 0, &val) != 0) {
+				lock_stop_read(dlg->vals_lock);
+				dlg_unlock( d_table, d_entry);
+				LM_ERR("Failed to set out pvar\n");
+				return -1;
+			}
+
+			n++;
+next_dialog:
+			lock_stop_read(dlg->vals_lock);
 		}
 
 		dlg_unlock( d_table, d_entry);
@@ -1482,7 +1481,7 @@ static int w_get_dlg_vals(struct sip_msg *msg, pv_spec_t *v_name,
 	/* dlg found - NOTE you have a ref! */
 	LM_DBG("dialog found, fetching all variable\n");
 
-	dlg_lock_dlg( dlg );
+	lock_start_read(dlg->vals_lock);
 
 	/* iterate the list with all the dlg variables */
 	for( dv=dlg->vals ; dv ; dv=dv->next) {
@@ -1504,7 +1503,7 @@ static int w_get_dlg_vals(struct sip_msg *msg, pv_spec_t *v_name,
 			if ( pv_set_value( msg, v_val, 0, &val)<0 ) {
 				LM_ERR("failed to add new value in dlg val list, ignoring\n");
 				/* better exit here, as we will desync the lists */
-				dlg_unlock_dlg( dlg );
+				lock_stop_read(dlg->vals_lock);
 				unref_dlg(dlg, 1);
 				return -1;
 			}
@@ -1512,7 +1511,7 @@ static int w_get_dlg_vals(struct sip_msg *msg, pv_spec_t *v_name,
 
 	}
 
-	dlg_unlock_dlg( dlg );
+	lock_stop_read(dlg->vals_lock);
 	unref_dlg(dlg, 1);
 
 	return 1;
@@ -1986,6 +1985,8 @@ static char *dlg_get_json_out(struct dlg_cell *dlg,int ctx,int *out_len)
 	}
 	*p++=']';
 
+	lock_start_read(dlg->vals_lock);
+
 	if (ctx && dlg->vals) {
 		char *it, *end;
 
@@ -1996,11 +1997,9 @@ static char *dlg_get_json_out(struct dlg_cell *dlg,int ctx,int *out_len)
 		k=0;
 		for( dv=dlg->vals ; dv ; dv=dv->next) {
 			if (dv->type == DLG_VAL_TYPE_STR)
-				for (i = 0, j = 0; i < dv->val.s.len; i++) {
-					if (dv->val.s.s[i] < 0x20 || dv->val.s.s[i] >= 0x7F) {
-						goto next_val;
-					}
-				}
+				for (i = 0, j = 0; i < dv->val.s.len; i++)
+					if (dv->val.s.s[i] < 0x20 || dv->val.s.s[i] >= 0x7F)
+						continue;
 
 			if (k!=0) {
 				*p++ = ','; 
@@ -2056,11 +2055,12 @@ static char *dlg_get_json_out(struct dlg_cell *dlg,int ctx,int *out_len)
 				memcpy(p,intbuf,intlen);
 				p += intlen;
 			}
-next_val:;
 		}
 
 		*p++='}';
 	}
+
+	lock_stop_read(dlg->vals_lock);
 
 	if (ctx && dlg->profile_links) {
 		memcpy(p,",\"profiles\":{",13);
@@ -2216,7 +2216,7 @@ static int w_get_dlg_jsons_by_val(struct sip_msg *msg, str *attr, pv_spec_t *att
 			if ( dlg->state>DLG_STATE_CONFIRMED )
 				continue;
 
-			if (check_dlg_value_unsafe(msg, dlg, attr, attr_val)==0) {
+			if (check_dlg_value(msg, dlg, attr, attr_val, 1) == 0) {
 				LM_DBG("dialog found, fetching variable\n");
 
 				if ((out_json = dlg_get_json_out(dlg,1,&out_len)) == NULL) {

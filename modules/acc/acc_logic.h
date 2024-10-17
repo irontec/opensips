@@ -39,7 +39,7 @@
 #define DO_ACC_LOG  (1ULL<<(0*8))
 #define DO_ACC_AAA  (1ULL<<(1*8))
 #define DO_ACC_DB   (1ULL<<(2*8))
-#define DO_ACC_EVI  (1ULL<<(4*8))
+#define DO_ACC_EVI  (1ULL<<(3*8))
 #define DO_ACC_ERR  ((unsigned long long)-1)
 
 #define DO_ACC        (1ULL<<0) /* generic accounting flag - internal only */

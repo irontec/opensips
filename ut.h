@@ -303,6 +303,7 @@ static inline char* sint2str(long l, int* len)
 	return p;
 }
 
+#define DOUBLE2STR_MAX_LEN  INT2STR_MAX_LEN
 static inline char* double2str(double d, int* len)
 {
 	unsigned int buf;
@@ -315,6 +316,17 @@ static inline char* double2str(double d, int* len)
 	return int2str_buf[buf];
 }
 
+#define BIGINT2STR_MAX_LEN  INT2STR_MAX_LEN
+static inline char* bigint2str(long long l, int* len)
+{
+	unsigned int buf;
+
+	buf = getstrbufindex();
+	*len = snprintf(int2str_buf[buf], INT2STR_MAX_LEN - 1, "%lld", l);
+	int2str_buf[buf][*len] = '\0';
+
+	return int2str_buf[buf];
+}
 
 /* faster memchr version */
 static inline char* q_memchr(char* p, int c, unsigned int size)
@@ -469,6 +481,33 @@ inline static int string2hex(
 
 	}
 	return orig_len * 2;
+}
+
+inline static int hex2string(
+	/* input */ const char *str, int len,
+	/* output */ char *hex )
+{
+	int i;
+	for (i = 0; i < len / 2; i++) {
+		if(str[2*i]>='0' && str[2*i]<='9')
+			hex[i] = (str[2*i]-'0') << 4;
+		else if(str[2*i]>='a' && str[2*i]<='f')
+			hex[i] = (str[2*i]-'a'+10) << 4;
+		else if(str[2*i]>='A' && str[2*i]<='F')
+			hex[i] = (str[2*i]-'A'+10) << 4;
+		else goto error;
+
+		if(str[2*i+1]>='0' && str[2*i+1]<='9')
+			hex[i] += str[2*i+1]-'0';
+		else if(str[2*i+1]>='a' && str[2*i+1]<='f')
+			hex[i] += str[2*i+1]-'a'+10;
+		else if(str[2*i+1]>='A' && str[2*i+1]<='F')
+			hex[i] += str[2*i+1]-'A'+10;
+		else goto error;
+	}
+	return i;
+error:
+	return -1;
 }
 
 /* portable sleep in microseconds (no interrupt handling now) */
@@ -1135,7 +1174,7 @@ static inline int str_casematch_nt(const str *a, const char *b)
 
 
 /*
- * search strb in stra
+ * search @strb in @stra, return pointer to 1st occurrence
  */
 static inline char* str_strstr(const str *stra, const str *strb)
 {
@@ -1162,6 +1201,48 @@ static inline char* str_strstr(const str *stra, const str *strb)
 
 		for (i=1; i<strb->len; i++)
 			if (stra->s[len+i]!=strb->s[i]) {
+				len++;
+				break;
+			}
+
+		if (i != strb->len)
+			continue;
+
+		return stra->s+len;
+	}
+
+
+	return NULL;
+}
+
+/*
+ * search @strb in @stra ignoring case of both, return pointer to 1st occurrence
+ */
+static inline char* str_strcasestr(const str *stra, const str *strb)
+{
+	int i;
+	int len;
+
+	if (stra==NULL || strb==NULL || stra->s==NULL || strb->s==NULL
+			|| stra->len<=0 || strb->len<=0) {
+#ifdef EXTRA_DEBUG
+		LM_DBG("bad parameters\n");
+#endif
+		return NULL;
+	}
+
+	if (strb->len > stra->len)
+		return NULL;
+
+	len=0;
+	while (stra->len-len >= strb->len){
+		if (tolower(stra->s[len]) != tolower(strb->s[0])) {
+			len++;
+			continue;
+		}
+
+		for (i=1; i<strb->len; i++)
+			if (tolower(stra->s[len+i])!=tolower(strb->s[i])) {
 				len++;
 				break;
 			}
@@ -1566,5 +1647,10 @@ int _base32decode(unsigned char *out, unsigned char *in, int len,
 
 #define calc_word32_encode_len calc_base32_encode_len
 #define calc_max_word32_decode_len calc_max_base32_decode_len
+
+#ifdef howmany
+#undef howmany
+#endif
+#define howmany(x, y) (sizeof(x) / sizeof(y))
 
 #endif
