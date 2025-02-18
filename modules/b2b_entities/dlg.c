@@ -885,13 +885,13 @@ search_dialog:
 		*/
 		dlg = b2bl_search_iteratively(&callid, &from_tag, T_invite,
 			hash_index);
-		tmb.unref_cell( T_invite );
 		if(dlg == NULL)
 		{
 			B2BE_LOCK_RELEASE(server_htable, hash_index);
 			LM_DBG("No dialog found for cancel\n");
 			return SCB_RUN_ALL;
 		}
+		tmb.unref_cell( T_invite );
 
 		ctx = b2b_get_context();
 		if (!ctx) {
@@ -1013,9 +1013,6 @@ search_dialog:
 			if(method_value == METHOD_ACK)
 			{
 				tmb.t_newtran(msg);
-				tm_tran = tmb.t_gett();
-				if (tm_tran && tm_tran!=T_UNDEFINED)
-					tmb.unref_cell(tm_tran);
 			} else
 			if(method_value == METHOD_BYE)
 			{
@@ -1025,6 +1022,9 @@ search_dialog:
 				str ko = str_init("Call/Transaction Does Not Exist");
 				tmb.t_reply(msg, 481, &ko);
 			}
+			tm_tran = tmb.t_gett();
+			if (tm_tran && tm_tran!=T_UNDEFINED)
+				tmb.unref_cell(tm_tran);
 			B2BE_LOCK_RELEASE(table, hash_index);
 			return SCB_DROP_MSG;
 		}
