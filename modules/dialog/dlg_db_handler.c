@@ -719,7 +719,7 @@ static int load_dialog_info_from_db(int dlg_hash_size)
 			}
 
 			/* script flags */
-			if (!VAL_NULL(values+19)) {
+			if (!VAL_NULL(values+19) && VAL_TYPE(values+19) != DB_INT) {
 				GET_STR_VALUE(flag_list, values, 19, 0, 0);
 				dlg->user_flags = flag_list_to_bitmask(&flag_list,
 					FLAG_TYPE_DIALOG, FLAG_DELIM, 1);
@@ -2253,7 +2253,7 @@ static int sync_dlg_db_mem(void)
 
 					if (!VAL_NULL(values+10)) {
 						cseq2.s = VAL_STR(values+10).s;
-						cseq2.len = strlen(cseq1.s);
+						cseq2.len = strlen(cseq2.s);
 						callee_leg_idx = callee_idx(known_dlg);
 
 						if (known_dlg->legs[callee_leg_idx].r_cseq.len < cseq2.len) {

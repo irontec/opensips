@@ -1,3 +1,906 @@
+=========================== Release 3.4.10 ==============================
+
+2024-12-18  Razvan Crainea  <razvan@opensips.org>
+        * [902f20532] :
+
+        b2b_logic: make retry list NULL terminated
+
+        (cherry picked from commit 8a547bdd6c35e8af17afed6bd54a1d49e75ec043)
+
+
+2024-12-17  Bogdan-Andrei Iancu  <bogdan@opensips.org>
+        * [ae38e5cf6] :
+
+        [sipmsgops] Fix messing up the max-fwd parsed value upon msg validation
+
+        For more details, see #3511 for the details.
+        Alternativ fix/workaround to #3511
+
+        (cherry picked from commit f1e3750a83dc606f96100baaaccc555e6a923ca7)
+
+
+2024-12-17  Bogdan-Andrei Iancu  <bogdan@opensips.org>
+        * [40c2e94ef] :
+
+        [dns_cache] Fix restoring IP array in hostend struct
+
+        When restoring (from cache) a hostend structure, be sure you end the "aliases" and "addresses" arrays with a NULL element.
+        Without that NULL terminator, when doing DNS-based failover on a cached hostend, OpenSIPS will use garbage IPs from the addresses array.
+
+        (cherry picked from commit 7d31fef29eefca30a8b8be668eebf1694e4df4a5)
+
+
+2024-12-16  Bogdan Andrei IANCU  <bogdan@opensips.org>
+        * [1f3bb9d94] :
+
+        Merge pull request #3480 from ar45/fix-maxfwds
+
+        [maxfwd]: Fix bug `is_maxfwd_lt` function limit value
+
+        (cherry picked from commit e6a0c98e829eef5c62ff7507fb6afc0cd0b98d14)
+
+
+2024-12-15  OpenSIPS  <github@opensips.org>
+        * [d72113280] :
+
+        Rebuild documentation
+
+
+2024-12-10  Liviu Chircu  <liviu@opensips.org>
+        * [2ab7e9e5c] :
+
+        json: Fix handling for long integers
+
+        This patch adds the "enable_long_quoting" modparam (default: OFF), which
+        causes larger integers to be returned as strings, in order to avoid the
+        integer overflow and data loss.
+
+        (cherry picked from commit b191025b75afb07b96562f730a8e9631c8ea35fa)
+
+        Author: Vlad Paiu <vladpaiu@opensips.org>
+        Add support for bigints ( store as string when exposing to opensips script )
+
+        (cherry picked from commit f324a1a432b02137cab73978fe5df5e11005d938)
+
+        Author: Vlad Paiu <vladpaiu@opensips.org>
+        Fixed undefined int_value
+
+        (cherry picked from commit ae113c7271ef0a5baa4674972d3b713ac6def6c7)
+        (cherry picked from commit c1b23178a3a0535ee66bafcd36a0c3df8cdab3c3)
+
+
+2024-12-08  OpenSIPS  <github@opensips.org>
+        * [3e10b12ff] :
+
+        Rebuild documentation
+
+
+2024-12-04  Liviu Chircu  <liviu@opensips.org>
+        * [7cd555003] :
+
+        clusterer: Add some dev debugging logs
+
+        (cherry picked from commit 5eae5fb1580feb512cc9a065c558a72d85405afb)
+
+
+2024-12-04  Liviu Chircu  <liviu@opensips.org>
+        * [b1038d4a2] :
+
+        clusterer: Fix a subtle subtraction bug
+
+        The "--node->no_ping_retries" operation is bogus, because that field
+        is only written during DB reload, or when dynamically learning a new
+        node.  This can lead to the following state, where a node's link flips
+        between ON/OFF on each ping attempt:
+
+        [Nov 29 20:23:15] INFO:clusterer:do_action_trans_2: Ping reply not received, node [2] is down
+        [Nov 29 20:23:15] INFO:clusterer:handle_pong: Node [2] is UP
+        [Nov 29 20:23:42] INFO:clusterer:do_action_trans_2: Ping reply not received, node [2] is down
+        [Nov 29 20:23:42] INFO:clusterer:handle_pong: Node [2] is UP
+        [Nov 29 20:24:30] INFO:clusterer:do_action_trans_2: Ping reply not received, node [2] is down
+        [Nov 29 20:24:30] INFO:clusterer:handle_pong: Node [2] is UP
+
+        (cherry picked from commit 02c4d14d79ff6cfd76b4220cdece80c0853e4e1f)
+
+
+2024-12-04  Liviu Chircu  <liviu@opensips.org>
+        * [aa1aa937e] :
+
+        usrloc HA: Improve management for replicated "labels"
+
+        This patch aims to fix the occasional "differring rlabels"
+        debugging error messages which may occur after a restart in usrloc HA
+        scenarios, especially if the active SIP box is restarted while
+        processing REGISTER requests in parallel.
+
+        Since both record and contact labels are dynamic, per-instance and lost
+        on restart, conflicts are to be expected.  The idea behind the fix is to
+        simply adapt the replicated contact_id to the local instance, thus
+        preferring the local labels to the remote labels whenever detecting
+        conflict.
+
+        (cherry picked from commit 90a00795b1d0685394818c4a69c235f487389878)
+
+
+2024-12-04  Liviu Chircu  <liviu@opensips.org>
+        * [223d89a6b] :
+
+        clusterer: Fix links going down during sync; Optimize pinging
+
+        This patch makes it so *any* succesfully sent BIN packet is also
+        considered a Ping (for sender) and Pong (for receiver).  This helps
+        improve the stability of the inter-node links, which will no longer go
+        down during a lengthy sync operation (e.g. 50K+ registered phones, which
+        take a few seconds to sync, and which would also significantly delay any
+        Ping/Pong packets happening to be queued up on that same TCP stream).
+
+        Moreover, thanks to the "last ping" timestamp updates during regular
+        BIN replication mentioned above, the clusterer pinging timer will now
+        only generate Ping packets during idle times (no BIN traffic produced).
+
+        (cherry picked from commit 7d74f3dc6233cf0cd6ad517a2329b837e2bac8bb)
+
+
+2024-12-04  Razvan Crainea  <razvan@opensips.org>
+        * [ca35a937b] :
+
+        b2b_logic: do not discard BYEs of active entities
+
+        Completes/fixes ce19c70ec.
+
+        Many thanks go to Norm Brandinger for reporting and testing it!
+
+        (cherry picked from commit 8631e9835bef7bfdee9fac1c618096cd462e4ac3)
+
+
+2024-12-03  Liviu Chircu  <liviu@opensips.org>
+        * [518380f6f] :
+
+        proto_bin: Bump 'bin_async_max_postponed_chunks' 32 -> 1024
+
+        The default of 32 chunks was too low, considering that BIN TCP conns are
+        very low in count (often a handful of nodes!), while also transporting
+        large volums of data within short periods of time (e.g. dialog/usrloc
+        syncs), so async data buffering may often occur.
+
+        (cherry picked from commit 1f17e3076e6946bcc54e6c627299bee60cf4210b)
+
+
+2024-11-24  OpenSIPS  <github@opensips.org>
+        * [175743ca1] :
+
+        Rebuild documentation
+
+
+2024-11-21  Liviu Chircu  <liviu@opensips.org>
+        * [b5c1bb232] :
+
+        Merge pull request #3519 from vladpaiu/troubleshoot_redis_issue
+
+        Fix Cluster Master-Slave detection
+
+2024-11-21  Vlad Paiu  <vladpaiu@opensips.org>
+        * [9fed325f4] :
+
+        cachedb_redis: Fix Cluster Master-Slave detection; Add dbg logs
+
+
+2024-11-20  Liviu Chircu  <liviu@opensips.org>
+        * [6bf24a3ea] :
+
+        Fix more logs exposing URL passwords
+
+        Continuation of ed74875df6
+
+        (cherry picked from commit 1370ed710955ffef4f3e34c715f60821ce886da6)
+
+
+2024-11-19  Liviu Chircu  <liviu@opensips.org>
+        * [b3c7f70aa] :
+
+        nathelper: Improve docs on fix_nated_register() and received_avp
+
+        (cherry picked from commit 526b538cba8058f0829c21110597d82718d6bab4)
+
+
+2024-11-19  Liviu Chircu  <liviu@opensips.org>
+        * [9bd311bfc] :
+
+        dialog: Do not crash with previous table version (11)
+
+        This patch ensures OpenSIPS doesn't crash if the "dialog.script_flags"
+        column is still of INT type (previous DB schema, before OpenSIPS 3.4).
+
+        (cherry picked from commit a1b273828f3b20e1b99f9c8185d5a7bf78504d50)
+
+
+2024-11-17  OpenSIPS  <github@opensips.org>
+        * [448fdf959] :
+
+        Rebuild documentation
+
+
+2024-11-15  Gang Zhuo  <gang.zhuo@gmail.com>
+        * [d2bd39139] :
+
+        db_oracle: fix "invalid parameter value" error when do sql_query("update ...")
+
+        (cherry picked from commit b5133bde0020740185e2c8c459b3b73f58623f65)
+
+
+2024-11-15  Gang Zhuo  <gang.zhuo@gmail.com>
+        * [19c7631b6] :
+
+        usrloc: fix build error when ORACLE_USRLOC flag is present
+
+        (cherry picked from commit 1f998239078fd5a0a067f6c56b83c3c2f4cce40f)
+
+
+2024-11-15  Liviu Chircu  <liviu@opensips.org>
+        * [e7fcb8a01] :
+
+        event_routing: Clean up convoluted looping logic
+
+        (cherry picked from commit a9e8b9203f405fcefda8670e7b9bbe7d0a504bab)
+
+
+2024-11-15  Vlad Paiu  <vladpaiu@opensips.org>
+        * [1ba9ebe74] :
+
+        go to the next sub on continue
+
+        (cherry picked from commit 6ef166a4b1e09bdf6f535c15ed57ca62fcaab436)
+
+
+2024-11-12  Bogdan-Andrei Iancu  <bogdan@opensips.org>
+        * [f17c60f79] :
+
+        [drouting] do not report error if replicated flags are the same
+
+        Avoid reporting error if the GW/Carrier replicated package does not change the existing status flags.
+
+        (cherry picked from commit 36b916a7e1333c7f539dcc25c93ba8c143d8016f)
+
+
+2024-10-27  OpenSIPS  <github@opensips.org>
+        * [653361b19] :
+
+        Rebuild documentation
+
+
+2024-10-24  Liviu Chircu  <liviu@opensips.org>
+        * [d6ad7687b] :
+
+        clusterer sync: Fix several SHM leaks on error cases (Donor side)
+
+        (cherry picked from commit 101396a59c23f91bc821c36b9bc1bd2e5daa1d35)
+
+
+2024-10-24  Liviu Chircu  <liviu@opensips.org>
+        * [8d6cd3740] :
+
+        clusterer: Fix sync edge-case causing SHM accumulation
+
+        This patch fixes a specific sync sequence leading to indefinite
+        accumulation of BIN packets and SHM exhaustion, as follows:
+
+        1) Sync Receiver node times out the sync in sync_check_timer()
+            (default timeout is 5s, by no means difficult to achieve)
+        2) Sync Donor continues to send SYNC packets
+            (on Receiver side, cap state is updated: PROGRESSING)
+        3) ! Sync Donor node loses link-state mid-sync, due to the pings being
+            on the same TCP connection (and delayed, way in the back)
+        4) Sync Donor fails & drops remaining SYNC + SYNC-END packets, as link
+            is down.  Due to this, the handle_sync_end(!is_timeout) procedure
+            is never ran on the Receiver, so the PROGRESSING flag is never
+            removed -> indefinite SHM buffering / memory leak
+
+        Thanks to Răzvan Crainea for helping with code & troubleshooting here!
+
+        (cherry picked from commit e5b2317ca9e9f33baef29205ecd792d8a5d5d2ed)
+
+
+2024-10-24  Razvan Crainea  <razvan@opensips.org>
+        * [fe9fac9d7] :
+
+        b2b_logic: a BYE for a disconnected entity should not influence the call
+
+        (cherry picked from commit 49ba1c37bfcd8dbc265c19c45895b3eee767b561)
+
+
+2024-10-24  Razvan Crainea  <razvan@opensips.org>
+        * [817adea7c] :
+
+        b2b_logic: always terminate a bridge initiator
+
+        Before this commit, only if the `notify` flag was used, the entity would
+        have been deleted.
+
+        (cherry picked from commit aff2d963126f097411753d699239bc938479c892)
+
+
+2024-10-24  Razvan Crainea  <razvan@opensips.org>
+        * [61c8ec659] :
+
+        b2b_logic: do not discard a recognized cross-BYE
+
+        (cherry picked from commit ce19c70ec7ca6cd6a7a12347a5acc0a282432c50)
+
+
+2024-10-24  Razvan Crainea  <razvan@opensips.org>
+        * [717940a01] :
+
+        b2b_entities: always unref a transaction created programatically
+
+        Ensure transactions do not leak by creating/replying them and not
+        unreffing when callback exits SCB_DROP_MSG
+
+        (cherry picked from commit 8b36f4cd6da33b26a8e2ce2bccf5cb075f2f1d04)
+
+
+2024-10-24  Razvan Crainea  <razvan@opensips.org>
+        * [06724800b] :
+
+        dialog: accurate match of outgoing legs
+
+        The initial code assumes that for each transaction branch, we serially
+        create a dialog leg - therefore, when a reply is received for a specific
+        branch, we match the leg based on its index.
+        This logic breaks when having a branch that has no outgoing leg/message
+        (i.e. when push notification is used), because the dialog legs id gets
+        offsetted by the number of "blind" branches, thus we are no longer able
+        to properly match the reply with the leg.
+        This fix makes sure that when creating a let, it has the same index as
+        the transaction's branch id, hence the reply is properly matched.
+
+        (cherry picked from commit 5280c86a100ad9414e9beeca620648d8388bab42)
+
+
+2024-10-24  Vlad Paiu  <vladpaiu@opensips.org>
+        * [e629e20af] :
+
+        Only update the TM UAS if we are in request context and are not running on top of a fake req
+
+        (cherry picked from commit 2031348d0c44da7b077b3a083973d3b525044b11)
+
+
+=========================== Release 3.4.9 ==============================
+
+2024-10-23  Bogdan-Andrei Iancu  <bogdan@opensips.org>
+        * [94184a296] :
+
+        [clusterer] Fix error handling when failing to load nodes
+
+        On failing to add a node (to the cluster), continue, as time as that node is not the current node.
+        And if giving up on whole cluster info loading, be sure we clean up and properly report this to the above layer - the last thing we should do is to report success (on load) but have partial, unconsistent data.
+
+        Fixes #3473
+
+        (cherry picked from commit 784e1a4cc52be74c0a2e9706e74794c4ea5940cf)
+
+
+2024-10-22  Liviu Chircu  <liviu@opensips.org>
+        * [8392a70aa] :
+
+        clusterer: Prevent startup delays from causing aborted syncs
+
+        This patch makes it so the 'seed_fallback_interval' modparam
+        time-counting is done in a way that *ignores* any random startup delays
+        (e.g. mod init stuff which may take time such as loading drouting,
+        dispatcher, rtpproxy, etc.).
+
+        Previously, the effect of this issue was that some modules (e.g. usrloc)
+        would randomly *not* sync data on startup, depending if the startup
+        delay happened to be lesser or greater than the 'seed_fallback_interval'.
+
+        (cherry picked from commit 928727410a63fa137f48aa8a77492c3c7b14b460)
+
+
+2024-10-22  Liviu Chircu  <liviu@opensips.org>
+        * [eeddfcc85] :
+
+        clusterer: Add/Improve some important logs during startup sync
+
+        (cherry picked from commit 2bf1bdcf5c087f16c21c99101738ed52ad8741c1)
+
+
+2024-10-22  Liviu Chircu  <liviu@opensips.org>
+        * [f423f90ec] :
+
+        clusterer: Fix potential AB/BA sync deadlock on DONOR nodes
+
+        This deadlock was reproduced with usrloc, but may also affect other
+        sync-based modules, as follows:
+
+        ---- sync DONOR node ----
+        1) [sync send Worker-1] grabs (A) cluster lock, then (B) usrloc hash lock
+            while building/sending the sync packets
+        2) [handle SIP REGISTER Worker-2] grabs (B) usrloc hash lock, then (A)
+            cluster lock when replicating data with cl_api.send_all()
+
+        This patch converts the "A+B" sequence in 1) into a "B,A" sequence.
+
+        (cherry picked from commit d89f1703f60aaaa2d6cca23aab191e5671dc0c83)
+
+
+2024-10-20  OpenSIPS  <github@opensips.org>
+        * [0a9931075] :
+
+        Rebuild documentation
+
+
+2024-10-18  Bogdan Andrei IANCU  <bogdan@opensips.org>
+        * [b793fdeac] :
+
+        Merge pull request #3497 from sippy/pr_fix_3495
+
+        python: Validate script_name a bit more carefully.
+        (cherry picked from commit e9f9e8e8c298f6aa1f1d6cdad2ba50c2d4827d8d)
+
+
+2024-10-17  Razvan Crainea  <razvan@opensips.org>
+        * [ec2ccb850] :
+
+        load_balancer: open db connection from every process
+
+        This ensures that the `mi("lb_reload")` command runs properly from
+        whatever process the job is dispatched from.
+
+        Many thanks to Antonis Psaras (@apsaras on GitHub) for reporting it.
+        Close #3488
+
+        (cherry picked from commit 3df04c7c6cc21999119a02301be316a605f06036)
+
+
+2024-10-13  OpenSIPS  <github@opensips.org>
+        * [bcbfaf83a] :
+
+        Rebuild documentation
+
+
+2024-10-09  Bogdan-Andrei Iancu  <bogdan@opensips.org>
+        * [0c060fb2d] :
+
+        [ldap] fix error handling when no available conn
+
+        Do not try to release/free a conn if we do not have one
+
+        (cherry picked from commit 27acf2a08be0b60f5a6675c8b44fb65a4cab0a7b)
+
+
+2024-10-08  Razvan Crainea  <razvan@opensips.org>
+        * [2aac7fe07] :
+
+        media_exchange: handle faked replies for re-INVITEs
+
+        Fix possible crash when a faked reply is received for re-INVITEs
+
+        (cherry picked from commit a70f7159773cb86dde220d4c851f49de83f73802)
+
+
+2024-10-06  OpenSIPS  <github@opensips.org>
+        * [1ebff082c] :
+
+        Rebuild documentation
+
+
+2024-10-03  Liviu Chircu  <liviu@opensips.org>
+        * [7919e3222] :
+
+        uac_auth(): Fix corner-case with missing "algorithm=" in 401
+
+        Make sure to convert ALG_UNSPEC to ALG_MD5 before doing the bitmask
+        conversion, as otherwise the matching will fail!
+
+        (cherry picked from commit 42fa1db32a259818495282a4eeaa1ae08087d9d3)
+
+
+2024-10-03  Razvan Crainea  <razvan@opensips.org>
+        * [f078fe057] :
+
+        dialog: fix compile error in previous commit
+
+
+2024-10-03  Razvan Crainea  <razvan@opensips.org>
+        * [9c0f5b034] :
+
+        dialog: update SDP on ACK as well
+
+        in case of lage negotiation, we need to update the SDP in dialog as well,
+        otherwise pinging or sending sequential messages will have no info on
+        the callee's SDP
+
+        (cherry picked from commit cacdc58e228e3c9fdd56e8107f7b528ed1c92d22)
+
+
+2024-10-02  Razvan Crainea  <razvan@opensips.org>
+        * [eb2014113] :
+
+        media_exchange: keep media session until dlg ends
+
+        This fixes situation when a media session is both started and ended from
+        different (MI) processes.
+
+        (cherry picked from commit d70b9c063b2da3eef05980cd826fd39a1c96ee56)
+
+
+2024-10-01  Razvan Crainea  <razvan@opensips.org>
+        * [f68caa6d9] :
+
+        db_sqlite: properly store BLOB values in DB
+
+        Do not insert BLOB values as strings, as they might have non-printable
+        characters, which breaks the value when storing. Instead, store them as
+        a hex-string.
+
+        Many thanks to Eric Tamme from Five9 for reporting this bug!
+
+        (cherry picked from commit 3e89bcfa935803ee4d85ba19daf2cbe8ae2c342a)
+
+
+2024-10-01  Alexandra Titoc  <oanatitoc@gmail.com>
+        * [2dde327bb] :
+
+        dialog: Fix potential copy-paste error
+
+        CID #417795
+
+        (cherry picked from commit bd0989cd5d81cb06468304c07ffc5211b4307951)
+
+
+2024-10-01  Alexandra Titoc  <oanatitoc@gmail.com>
+        * [1223e3edb] :
+
+        compression: Add and fix null checks
+
+        CID #58406, #200016, #58416
+
+        (cherry picked from commit 8cfb66b9050394b31ac53fd0b5117544f0838cae)
+
+
+2024-10-01  Alexandra Titoc  <oanatitoc@gmail.com>
+        * [3f89c051f] :
+
+        compression: Fix potential copy-paste error
+
+        CID #58327
+
+        (cherry picked from commit 56b218bd7a065db61e02cbc9e0f759bec035dc1c)
+
+
+2024-09-29  OpenSIPS  <github@opensips.org>
+        * [ffb6a646b] :
+
+        Rebuild documentation
+
+
+2024-09-26  Vlad Paiu  <vladpaiu@opensips.org>
+        * [11c99480a] :
+
+        Populate last dst leg for internally generated sequentials
+
+        (cherry picked from commit 4d6e5d572f934c11d3c721d6beec366ee57f3a9a)
+
+
+2024-09-25  Liviu Chircu  <liviu@opensips.org>
+        * [c667f1adb] :
+
+        db_sqlite: Fix some mis-placed NULL checks during row reallocs
+
+        (cherry picked from commit 1cc9f5d475fa4e68a0622357c59fa2b5ba997380)
+
+
+2024-09-23  Liviu Chircu  <liviu@opensips.org>
+        * [8b19e1da9] :
+
+        Clustered modules: Add sections on clusterer's "seed" mechanism
+
+            * b2b_entities
+            * cachedb_local
+            * dialog
+            * load_balancer
+            * presence
+            * usrloc
+
+        (cherry picked from commit 7723f0e918d0cb562a5424104eb3077bd8dd3054)
+
+
+2024-09-23  Liviu Chircu  <liviu@opensips.org>
+        * [304ced9c3] :
+
+        drouting docs: Add a section on clusterer's "seed" mechanism
+
+        (cherry picked from commit 184075c4695facd370ec17e2f2184c4c255afa9e)
+
+
+2024-09-23  Liviu Chircu  <liviu@opensips.org>
+        * [4590c5784] :
+
+        dispatcher docs: Add a section on clusterer's "seed" mechanism
+
+        (cherry picked from commit d9a3c55f0c97c618034ed7be9b82aa17e6981ec4)
+
+
+2024-09-22  OpenSIPS  <github@opensips.org>
+        * [023478cf0] :
+
+        Rebuild documentation
+
+
+2024-09-20  Razvan Crainea  <razvan@opensips.org>
+        * [4abf73a8e] :
+
+        b2b_logic: prevent crash in case a bridging is in progress
+
+        (cherry picked from commit c69201ebcc6cc382d1ec82f7e6756ff3fc0928ed)
+
+
+2024-09-20  Bogdan-Andrei Iancu  <bogdan@opensips.org>
+        * [2d3f1e640] :
+
+        Fix bogus active counting for procs terminating due to down-scaling
+
+        Be sure to mark the proc as idel before actually doing "exit()", otherwise we will count it as busy for the whole time the proc is terminated by OS (we automatically clear the load stats only upon sigchild on attendant)
+
+        (cherry picked from commit e982e90b4a7ccab0dfcff3628566359fb0ab0539)
+
+
+2024-09-17  Razvan Crainea  <razvan@opensips.org>
+        * [809a23e1e] :
+
+        permissions: connect to db from each process
+
+        Many thanks to Wayne Davies from Five9 for reporting it!
+
+        (cherry picked from commit 4d79a71ee77ae020b9f1440bff4439257bed014a)
+
+
+2024-09-15  OpenSIPS  <github@opensips.org>
+        * [e1b334c90] :
+
+        Rebuild documentation
+
+
+2024-09-13  Razvan Crainea  <razvan@opensips.org>
+        * [18b9c36c2] :
+
+        b2b_entities: do not `reset_cancelled_t`
+
+        As it is not exposed through the API. This completes c7780dbd.
+
+        Many thanks to Norm Brandinger for reporting it!
+
+        (cherry picked from commit 95767fc861e9c413c466989f3ac4b15efbd1a7d3)
+
+
+2024-09-13  Razvan Crainea  <razvan@opensips.org>
+        * [9159b27d1] :
+
+        dialplan: no longer use per MI child init
+
+        All processes already have the database connection, so there is no need
+        to re-create it in MI
+
+        (cherry picked from commit 7022a48985be59cbc3a19e3f72cf4793415cf22b)
+
+
+2024-09-13  Razvan Crainea  <razvan@opensips.org>
+        * [8cb9a9504] :
+
+        b2b_entitites: do not unref cancelled cell if not ours
+
+        If a CANCEL is caught by the b2b_entities but it is not part of a b2b
+        dialog, it should not unref the cell, otherwise after the script is
+        executed, it will be unreffed again, leading to a double unref.
+
+        Many thanks to Voxtronic for spotting this issue!
+
+        (cherry picked from commit c7780dbd78a2192178694283da982dee84b9f80b)
+
+
+2024-09-13  Razvan Crainea  <razvan@opensips.org>
+        * [ea95ce883] :
+
+        dialplan: create DB connection from all workers
+
+        This allows modules, such as mi_script, to run reload commands inline,
+        and not through a dedicated MI process.
+
+        (cherry picked from commit 9a3caeca760ec90f6bf5eaac44eff98923106f4d)
+
+
+2024-09-13  Razvan Crainea  <razvan@opensips.org>
+        * [26aaf7e36] :
+
+        dialog: never update ACK cseq with 0 value
+
+        In case there is no mapping for an ACK, do not update the message with 0
+
+        Many thanks to Nick Altmann for reporting this!
+
+        (cherry picked from commit a47c16ffb0f98250a4e8ea8e5cef23c5c187ab06)
+
+
+2024-09-12  Liviu Chircu  <liviu@opensips.org>
+        * [6dc8c3b8e] :
+
+        rest_client: Complete the fix in a3dd31ad6
+
+        Proper pointer/data management.
+
+        Credits to Aron Podrigal (@ar45) for providing feedback and testing!
+
+        (cherry picked from commit b15bc4451fc2a04d5896aa75d11d497e6366cd58)
+
+
+2024-09-11  Aron Podrigal  <aronp@guaranteedplus.com>
+        * [371ba4991] :
+
+        Fixes #3464
+
+        when setting `connected_ts` set the address which is being used as value?
+
+        (cherry picked from commit a3dd31ad6e0cb3728a7f0b0a3e6bbfc5e3beb79c)
+
+
+2024-09-11  Aron Podrigal  <aronp@guaranteedplus.com>
+        * [ba2c904bc] :
+
+        Fixed - rcl_release_url() was never called in some cases
+
+        (cherry picked from commit 50d1efbe9753706a8891ed28be04e4986484db64)
+
+
+2024-09-11  Vlad Paiu  <vladpaiu@opensips.org>
+        * [920d4e15b] :
+
+        Fix fetching TLS domain for a redis connection
+
+        (cherry picked from commit b3e81a6472214694a4ba47e3c717281e26a04466)
+
+
+2024-09-09  Razvan Crainea  <razvan@opensips.org>
+        * [be67b0a08] :
+
+        topology_hiding: remove  bogus debugging
+
+        (cherry picked from commit 4eda102a5398d63e9b4c45796695fa7408de14c6)
+
+
+2024-09-09  Razvan Crainea  <razvan@opensips.org>
+        * [5cfe3cfef] :
+
+        b2b_entities: alocate mem for empty str
+
+        Otherwise the `reason` variable points to a volatile memory that
+        dissapears, leading to an uninitialized variable
+
+        (cherry picked from commit 550eb6b7b1e08d5ea235659038fe536ceecf398a)
+
+
+2024-09-08  OpenSIPS  <github@opensips.org>
+        * [7039ab89b] :
+
+        Rebuild documentation
+
+
+2024-09-05  Razvan Crainea  <razvan@opensips.org>
+        * [5c5d8a57c] :
+
+        clusterer: fix possible inconsistent list handling
+
+        The tags `active_msgs_sent` list might become inconsistent due to the
+        fact that the `ni->next` is being populated outside locks.
+
+        (cherry picked from commit 3092ec2d07419f64dc3152e770cfdbdd186b9f1d)
+
+
+2024-09-03  Liviu Chircu  <liviu@opensips.org>
+        * [c075eb0f0] :
+
+        Merge pull request #3457 from Shkiperon/3.4-builder-fix
+
+        Fix HP_MALLOC build flag - DBG_MALLOC is not necessary for it
+
+2024-09-03  Razvan Crainea  <razvan@opensips.org>
+        * [0fbabbe1d] :
+
+        topology_hiding: do not mark the contacts parts as HDR_CONTACT_T
+
+        This ensures that when a fixed contact is restored from a shm lump, it
+        does not overlap to contact parts, as topology hiding builds them.
+
+        Many thanks to David Trihy from Genesys for reporting and helping us
+        troubleshoot.
+
+        (cherry picked from commit e65173fc9737a0023e23799a330e852404605548)
+
+
+2024-09-03  Razvan Crainea  <razvan@opensips.org>
+        * [91af8ccd6] :
+
+        Revert "tm: fix bogus contact built without domain"
+
+        This reverts commit de50249961a25fdf3defbe77601c45c2dd2f0399.
+
+        (cherry picked from commit 307a9862edf60e8c394bb9c0e9062f645d3e3978)
+
+
+2024-09-02  Shkiperon  <shkiperon@gmail.com>
+        * [ed632d43f] :
+
+        Fix HP_MALLOC build flag - DBG_MALLOC is not necessary for it
+
+        Style fix
+
+
+2024-09-01  OpenSIPS  <github@opensips.org>
+        * [e39971e28] :
+
+        Rebuild documentation
+
+
+2024-08-28  Vlad Paiu  <vladpaiu@opensips.org>
+        * [600f0518f] :
+
+        NULL check received connections
+
+        (cherry picked from commit 2b566e67ad207bf05cd1f5768e4482d21b7059f3)
+
+
+2024-08-28  Liviu Chircu  <liviu@opensips.org>
+        * [96cf16819] :
+
+        SIP PN: Prevent overlapping modifications of pn_ebr_filters template
+
+        The @pn_ebr_filters templates are actually allocated in shared memory and
+        can be modified by multiple SIP workers concurrently, leading to
+        occasional strange routing of INVITEs.  The fix is to simply allocate
+        the objects in private memory instead.
+
+        Credits to Ondrej Jirman <megi@xff.cz> for documenting, troubleshooting
+        and providing an initial fix!
+
+        Related to #3394
+
+        (cherry picked from commit 078e65b98909f477c819b57e79de0b8e18dccdb4)
+
+
+2024-08-25  OpenSIPS  <github@opensips.org>
+        * [883683dc3] :
+
+        Rebuild documentation
+
+
+2024-08-22  Vlad Paiu  <vladpaiu@opensips.org>
+        * [d5ca8c6da] :
+
+        Fix comparision of SIP URIs, add GR and PN related params checks
+
+        (cherry picked from commit 8fa7bcb9ce4550c978f99bc7aaed21fdf7e28e7e)
+
+
+2024-08-21  Razvan Crainea  <razvan@opensips.org>
+        * [b802ff40c] :
+
+        tm: fix bogus contact built without domain
+
+        When fixing headers for fake messages (`fix_fake_req_headers` func), the
+        function was looking for lumps that were removing the contact, because
+        it would assume they will be the same that would add a new one (i.e.
+        `fix_nated_contact`). However, the `toppology_hiding("U")` function,
+        would create a del lump, but then adding 3 lumps over it. This would
+        make the fixing bogusly learning the contact as "sip:$user" instead of
+        hole URI.
+        The fix for this was to make sure that there is only one ADD lump,
+        otherwise it would point to a shorter (broken) URI.
+
+        Credits go to David Trihy from Genesys for reporting and helping us
+        troubleshoot.
+
+        (cherry picked from commit de50249961a25fdf3defbe77601c45c2dd2f0399)
+
+
 =========================== Release 3.4.8 ==============================
 
 2024-08-21  Liviu Chircu  <liviu@opensips.org>

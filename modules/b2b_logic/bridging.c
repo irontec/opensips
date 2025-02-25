@@ -204,15 +204,17 @@ mi_response_t *mi_b2b_bridge(const mi_params_t *params,
 		goto error;
 	}
 
-	if (old_entity->peer->peer == old_entity)
-		old_entity->peer->peer = NULL;
-	else
-	{
-		LM_ERR("Unexpected chain: old_entity=[%p] and old_entity->peer->peer=[%p]\n",
-			old_entity, old_entity->peer->peer);
-		goto error;
+	if (old_entity->peer) {
+		if (old_entity->peer->peer == old_entity)
+			old_entity->peer->peer = NULL;
+		else
+		{
+			LM_ERR("Unexpected chain: old_entity=[%p] and old_entity->peer->peer=[%p]\n",
+				old_entity, old_entity->peer->peer);
+			goto error;
+		}
+		old_entity->peer = NULL;
 	}
-	old_entity->peer = NULL;
 
 	tuple->bridge_entities[0]= bridging_entity;
 
@@ -388,8 +390,12 @@ int process_bridge_bye(struct sip_msg* msg,  b2bl_tuple_t* tuple,
 		entity_no = bridge_get_entityno(tuple, entity);
 		if(entity_no < 0)
 		{
-			LM_ERR("No match found\n");
-			return -1;
+			if (!entity) {
+				LM_ERR("No match found\n");
+				return -1;
+			}
+			/* we've got a known entity, but no longer part of the
+			 * bridge - we gracefully reply and drop */
 		}
 	}
 
@@ -400,7 +406,8 @@ int process_bridge_bye(struct sip_msg* msg,  b2bl_tuple_t* tuple,
 	rpl_data.text =&ok;
 	b2b_api.send_reply(&rpl_data);
 
-	return process_bridge_dialog_end(tuple, hash_index, entity_no, entity);
+	return (entity_no < 0 ? 0:
+			process_bridge_dialog_end(tuple, hash_index, entity_no, entity));
 }
 
 int process_bridge_negreply(b2bl_tuple_t* tuple,
@@ -1112,9 +1119,7 @@ int b2b_script_bridge(struct sip_msg *msg, str *br_ent1_str, str *br_ent2_str,
 		goto done;
 	}
 
-	if ((params->flags & B2BL_BR_FLAG_NOTIFY ||
-		params->flags & B2BL_BR_FLAG_RETURN_AFTER_FAILURE) && entity)
-		tuple->bridge_initiator = entity;
+	tuple->bridge_initiator = entity;
 
 	cur_route_ctx.flags |= B2BL_RT_DO_UPDATE;
 
@@ -2345,7 +2350,7 @@ int b2bl_push_bridge_retry(b2bl_tuple_t *tuple)
 	 * order they appear */
 	lock_get(b2bl_bridge_retry_lock);
 	retry->time = get_uticks();
-	retry->next = *b2bl_bridge_retry_head;
+	retry->next = NULL;
 	if (*b2bl_bridge_retry_last)
 		(*b2bl_bridge_retry_last)->next = retry;
 	else
