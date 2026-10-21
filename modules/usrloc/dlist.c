@@ -117,7 +117,7 @@ static int get_domain_db_ucontacts(udomain_t *d, void *buf, int *len,
 	static str query_str;
 	static struct sip_uri puri;
 
-	struct socket_info *sock;
+	const struct socket_info *sock;
 	struct proxy_l next_hop;
 	db_res_t *res = NULL;
 	db_row_t *row;
@@ -407,7 +407,7 @@ cdb_pack_ping_data(const str *aor, const cdb_pair_t *contact,
 	struct sip_uri puri;
 	struct list_head *_;
 	unsigned int cflags = 0;
-	struct socket_info *sock = NULL;
+	const struct socket_info *sock = NULL;
 	struct proxy_l next_hop;
 	str ct_uri, received = STR_NULL, path = STR_NULL;
 	int needed;
@@ -572,7 +572,7 @@ get_domain_cdb_ucontacts(udomain_t *d, void *buf, int *len,
 	int_str_t val;
 	cdb_pair_t *pair;
 	cdb_dict_t *contacts;
-	str contacts_key = str_init("contacts"); /* TODO */
+	str contacts_key = str_init("contacts"), aor_key = str_init("aor"); /* TODO */
 	str *aor;
 	enum cdb_filter_op rhs_op;
 	int shortage;
@@ -629,7 +629,7 @@ get_domain_cdb_ucontacts(udomain_t *d, void *buf, int *len,
 		/* locate the 'aor' and 'contacts' fields */
 		list_for_each (__, &row->dict) {
 			pair = list_entry(__, cdb_pair_t, list);
-			if (pair->key.is_pk) {
+			if (pair->key.is_pk || str_match(&pair->key.name, &aor_key)) {
 				aor = &pair->val.val.st;
 				if (contacts)
 					goto pack_data;

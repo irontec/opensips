@@ -122,8 +122,8 @@ static int tls_send_tout = 100;
 static int  mod_init(void);
 static int proto_tls_init(struct proto_info *pi);
 static int proto_tls_init_listener(struct socket_info *si);
-static int proto_tls_send(struct socket_info* send_sock,
-		char* buf, unsigned int len, union sockaddr_union* to,
+static int proto_tls_send(const struct socket_info* send_sock,
+		char* buf, unsigned int len, const union sockaddr_union* to,
 		unsigned int id);
 static void tls_report(int type, unsigned long long conn_id, int conn_flags,
 		void *extra);
@@ -339,18 +339,19 @@ static int proto_tls_init(struct proto_info *pi)
 	pi->default_port		= tls_port_no;
 
 	pi->tran.init_listener	= proto_tls_init_listener;
+	pi->tran.bind_listener	= tcp_bind_listener;
 	pi->tran.send			= proto_tls_send;
 	pi->tran.dst_attr		= tcp_conn_fcntl;
 
 	pi->net.flags			= PROTO_NET_USE_TCP;
-	pi->net.read			= (proto_net_read_f)tls_read_req;
-	pi->net.write			= (proto_net_write_f)tls_async_write;
-	pi->net.conn_init		= proto_tls_conn_init;
-	pi->net.conn_clean		= proto_tls_conn_clean;
+	pi->net.stream.read		= tls_read_req;
+	pi->net.stream.write		= tls_async_write;
+	pi->net.stream.conn.init	= proto_tls_conn_init;
+	pi->net.stream.conn.clean	= proto_tls_conn_clean;
 	if (cert_check_on_conn_reusage)
-		pi->net.conn_match		= tls_conn_extra_match;
+		pi->net.stream.conn.match	= tls_conn_extra_match;
 	else
-		pi->net.conn_match		= NULL;
+		pi->net.stream.conn.match	= NULL;
 	pi->net.report			= tls_report;
 
 	if (tls_async && !tcp_has_async_write()) {
@@ -360,7 +361,7 @@ static int proto_tls_init(struct proto_info *pi)
 	}
 
 	if (tls_async!=0)
-		pi->net.async_chunks= tls_async_max_postponed_chunks;
+		pi->net.stream.async_chunks= tls_async_max_postponed_chunks;
 
 	return 0;
 }
@@ -473,8 +474,8 @@ static void tls_report(int type, unsigned long long conn_id, int conn_flags,
 	return;
 }
 
-static int proto_tls_send(struct socket_info* send_sock,
-		char* buf, unsigned int len, union sockaddr_union* to,
+static int proto_tls_send(const struct socket_info* send_sock,
+		char* buf, unsigned int len, const union sockaddr_union* to,
 		unsigned int id)
 {
 	struct tcp_connection *c;
@@ -615,13 +616,16 @@ send_it:
 
 	/* mark the ID of the used connection (tracing purposes) */
 	last_outgoing_tcp_id = c->id;
-	send_sock->last_local_real_port = c->rcv.dst_port;
-	send_sock->last_remote_real_port = c->rcv.src_port;
+	send_sock->last_real_ports->local = c->rcv.dst_port;
+	send_sock->last_real_ports->remote = c->rcv.src_port;
 
-	tcp_conn_release(c, 0);
+	tcp_conn_release(c, (rlen<len)?1:0);
 	return rlen;
 con_release:
 	sh_log(c->hist, TCP_SEND2MAIN, "send 1, (%d)", c->refcnt);
+	/* close the fd if this process is not meant to own it */
+	if (c->proc_id != process_no)
+		close(fd);
 	tcp_conn_release(c, (rlen < 0)?0:1);
 	return rlen;
 }
@@ -649,13 +653,6 @@ static int tls_read_req(struct tcp_connection* con, int* bytes_read)
 
 	/* do this trick in order to trace whether if it's an error or not */
 	ret=tls_mgm_api.tls_fix_read_conn(con, con->fd, tls_handshake_tout, t_dst, 1);
-	if (ret < 0) {
-		LM_ERR("failed to do pre-tls handshake!\n");
-		return -1;
-	} else if (ret == 0) {
-		LM_DBG("SSL accept/connect still pending!\n");
-		return 0;
-	}
 
 	/* if there is pending tracing data on an accepted connection, flush it
 	 * As this is a read op, we look only for accepted conns, not to conflict
@@ -675,9 +672,12 @@ static int tls_read_req(struct tcp_connection* con, int* bytes_read)
 		con->proto_flags &= ~( F_TLS_TRACE_READY );
 	}
 
-	if ( ret != 1 ) {
-		LM_ERR("failed to do pre-tls reading\n");
+	if (ret < 0) {
+		LM_ERR("failed to do pre-tls handshake!\n");
 		goto error;
+	} else if (ret == 0) {
+		LM_DBG("SSL accept/connect still pending!\n");
+		return 0;
 	}
 
 	if(con->state!=S_CONN_OK)

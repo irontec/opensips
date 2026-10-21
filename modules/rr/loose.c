@@ -358,6 +358,7 @@ static inline int get_maddr_uri(str *uri, struct sip_uri *puri)
 {
 	static char builturi[RH_MADDR_PARAM_MAX_LEN+1];
 	struct sip_uri turi;
+	int len;
 
 	if(uri==NULL || uri->s==NULL)
 		return RR_ERROR;
@@ -380,6 +381,12 @@ static inline int get_maddr_uri(str *uri, struct sip_uri *puri)
 		LM_ERR( "Too long maddr parameter\n");
 		return RR_ERROR;
 	}
+	len = 4 + puri->maddr_val.len
+					+ ((puri->port.len>0)?(1+puri->port.len):0);
+	if( len > RH_MADDR_PARAM_MAX_LEN ) {
+		LM_ERR( "Too long maddr URI\n");
+		return RR_ERROR;
+	}
 	memcpy( builturi, "sip:", 4 );
 	memcpy( builturi+4, puri->maddr_val.s, puri->maddr_val.len );
 
@@ -390,8 +397,7 @@ static inline int get_maddr_uri(str *uri, struct sip_uri *puri)
 				puri->port.len);
 	}
 
-	uri->len = 4+puri->maddr_val.len
-					+ ((puri->port.len>0)?(1+puri->port.len):0);
+	uri->len = len;
 	builturi[uri->len]='\0';
 	uri->s = builturi;
 
@@ -501,7 +507,7 @@ static inline int after_strict(struct sip_msg* _m)
 	rr_t* rt, *prev, *del_rt;
 	char* rem_off;
 	str uri;
-	struct socket_info *si;
+	const struct socket_info *si;
 	unsigned short port, proto;
 
 	hdr = _m->route;
@@ -713,7 +719,7 @@ static inline int after_loose(struct sip_msg* _m, int preloaded)
 	int ret;
 #endif
 	str uri;
-	struct socket_info *si;
+	const struct socket_info *si;
 	int force_ss = 0;
 
 	hdr = _m->route;

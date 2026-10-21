@@ -23,6 +23,7 @@
 #include "../../mod_fix.h"
 #include "../../dprint.h"
 
+#include <unistd.h>
 #include <uuid/uuid.h>
 
 #define UUID_STR_BUFSIZE 37
@@ -37,6 +38,7 @@ enum uuid_gen_vers {
 	UUID_VERS_3 = 3,
 	UUID_VERS_4 = 4,
 	UUID_VERS_5 = 5,
+	UUID_VERS_7 = 7,
 };
 
 static uuid_t uuid;
@@ -49,7 +51,7 @@ static int pv_get_uuid(struct sip_msg *msg, pv_param_t *param,
 						pv_value_t *res);
 
 static const pv_export_t mod_items[] = {
-	{{"uuid", sizeof("uuid")-1}, 1000, pv_get_uuid, 0, 0, 0, 0, 0},
+	{str_const_init("uuid"), 1000, pv_get_uuid, 0, 0, 0, 0, 0},
 	{{0, 0}, 0, 0, 0, 0, 0, 0, 0}
 };
 
@@ -86,6 +88,37 @@ struct module_exports exports= {
 	0
 };
 
+#ifdef UUID_TYPE_DCE_TIME_V7
+static int gen_uuidv7(uuid_t value) {
+	// random bytes
+	if (getentropy(value, 16) != 0) {
+		return -1;
+	}
+
+	// current timestamp in ms
+	struct timeval tv;
+	if (gettimeofday(&tv, NULL) != 0)
+		return -1;
+
+	uint64_t timestamp = (uint64_t)tv.tv_sec * 1000 + tv.tv_usec / 1000;
+
+	// timestamp
+	value[0] = (timestamp >> 40) & 0xFF;
+	value[1] = (timestamp >> 32) & 0xFF;
+	value[2] = (timestamp >> 24) & 0xFF;
+	value[3] = (timestamp >> 16) & 0xFF;
+	value[4] = (timestamp >> 8) & 0xFF;
+	value[5] = timestamp & 0xFF;
+
+	// version and variant
+	value[6] = (value[6] & 0x0F) | 0x70;
+	value[8] = (value[8] & 0x3F) | 0x80;
+
+	return RET_OK;
+}
+#endif
+
+
 static int gen_uuid(enum uuid_gen_vers vers, str *ns, str *n, pv_value_t *res)
 {
 	int rc = RET_OK;
@@ -94,6 +127,13 @@ static int gen_uuid(enum uuid_gen_vers vers, str *ns, str *n, pv_value_t *res)
 	#endif
 
 	switch (vers) {
+	case UUID_VERS_7:
+	#ifdef UUID_TYPE_DCE_TIME_V7
+		rc = gen_uuidv7(uuid);
+		break;
+	#else
+		LM_WARN("UUID version 7 not supported! Using algorithm 0\n");
+	#endif
 	case UUID_VERS_0:
 		uuid_generate(uuid);
 		break;
@@ -183,6 +223,9 @@ static int w_uuid(struct sip_msg *msg, pv_spec_t *out_var, int *vers_param, str 
 	#ifndef	UUID_TYPE_DCE_SHA1
 	case UUID_VERS_5:
 	#endif
+	#ifndef UUID_TYPE_DCE_TIME_V7
+	case UUID_VERS_7:
+	#endif
 		LM_WARN("UUID version: %d not supported! Using default algorithm\n",
 			vers);
 		vers = UUID_VERS_0;
@@ -193,6 +236,9 @@ static int w_uuid(struct sip_msg *msg, pv_spec_t *out_var, int *vers_param, str 
 	case UUID_VERS_3:
 	#endif
 	case UUID_VERS_4:
+	#ifdef UUID_TYPE_DCE_TIME_V7
+	case UUID_VERS_7:
+	#endif
 	#ifdef UUID_TYPE_DCE_SHA1
 	case UUID_VERS_5:
 	#endif

@@ -46,7 +46,10 @@
 #include "db_cap.h"
 #include "db_row.h"
 #include "db_ps.h"
+#include "db_pool.h"
 #include "../globals.h"
+
+struct pool_con;
 
 extern stat_var *sql_total_queries;
 extern stat_var *sql_slow_queries;
@@ -334,6 +337,18 @@ typedef int (*db_async_resume_f) (db_con_t *_h, int fd, db_res_t **_r,
  */
 typedef int (*db_async_free_result_f) (db_con_t *_h, db_res_t *_r, void *_priv);
 
+/*
+ * \brief Performs the necessary cleanup of asynchronous query results and
+ * their associated internal structures after there was a timeout
+ *
+ * \param _h structure representing the database handle
+ * \param _priv data that shall be populated by the engine
+ *			!!! the same data pointer passed to the "query" and "resume" calls
+ * \return:
+ *		-> 0 on success, negative on failure
+ */
+typedef void (*db_async_timeout_f) (db_con_t *_h, int fd, void *_priv);
+
 /**
  * \brief Database module callbacks
  *
@@ -359,6 +374,8 @@ typedef struct db_func {
 	db_async_raw_query_f   async_raw_query;   /* Starts an asynchronous raw query */
 	db_async_resume_f      async_resume;      /* Called on progress or completed query */
 	db_async_free_result_f async_free_result; /* Clean up after an async query */
+
+	db_async_timeout_f     async_timeout;     /* Cleans up after async timed out query */
 } db_func_t;
 
 
@@ -393,7 +410,7 @@ int db_bind_mod(const str* mod, db_func_t* dbf);
  * \return returns a pointer to the db_con_t representing the connection if it was
    successful, otherwise 0 is returned.
  */
-db_con_t* db_do_init(const str* url, void* (*new_connection)());
+db_con_t* db_do_init(const str* url, void* (*new_connection)(const struct db_id *));
 
 
 /**
@@ -404,7 +421,7 @@ db_con_t* db_do_init(const str* url, void* (*new_connection)());
  * \param _h database connection handle
  * \param (*free_connection) Pointer to the db specifc free_connection method
  */
-void db_do_close(db_con_t* _h, void (*free_connection)());
+void db_do_close(db_con_t* _h, void (*free_connection)(struct pool_con*));
 
 
 /**

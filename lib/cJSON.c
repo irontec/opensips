@@ -133,8 +133,19 @@ static int cJSON_strcasecmp(const unsigned char *s1, const unsigned char *s2)
     return tolower(*s1) - tolower(*s2);
 }
 
-static void *(*cJSON_malloc)(size_t sz) = osips_pkg_malloc;
-static void (*cJSON_free)(void *ptr) = osips_pkg_free;
+#if defined(__GNUC__) || defined(__clang__)
+#define CJSON_TLS __thread
+#elif defined(_MSC_VER)
+#define CJSON_TLS __declspec(thread)
+#else
+#error "Thread-local storage support required for cJSON allocator hooks"
+#endif
+
+/* allocator hooks are switched at runtime; keep them thread-local to avoid
+ * cross-thread SHM/PKG allocator mixing when cJSON_InitHooks() is used */
+static CJSON_TLS void *(*cJSON_malloc)(size_t sz) = osips_pkg_malloc;
+static CJSON_TLS void (*cJSON_free)(void *ptr) = osips_pkg_free;
+#undef CJSON_TLS
 
 static unsigned char* cJSON_strdup(const unsigned char* str)
 {
@@ -2527,4 +2538,74 @@ void cJSON_Minify(char *json)
 
     /* and null-terminate. */
     *into = '\0';
+}
+
+cjbool cJSON_IsObject(const cJSON * const item)
+{
+    if (item == NULL)
+    {
+        return false;
+    }
+
+    return (item->type & 0xFF) == cJSON_Object;
+}
+
+cjbool cJSON_IsNull(const cJSON * const item)
+{
+    if (item == NULL)
+    {
+        return false;
+    }
+
+    return (item->type & 0xFF) == cJSON_NULL;
+}
+
+
+static cJSON *merge_patch(cJSON *target, const cJSON * const patch)
+{
+    cJSON *patch_child = NULL;
+
+    if (!cJSON_IsObject(patch))
+    {
+        /* scalar value, array or NULL, just duplicate */
+        cJSON_Delete(target);
+        return cJSON_Duplicate(patch, 1);
+    }
+
+    if (!cJSON_IsObject(target))
+    {
+        cJSON_Delete(target);
+        target = cJSON_CreateObject();
+    }
+
+    patch_child = patch->child;
+    while (patch_child != NULL)
+    {
+        if (cJSON_IsNull(patch_child))
+        {
+            cJSON_DeleteItemFromObject(target, patch_child->string);
+        }
+        else
+        {
+            cJSON *replace_me = NULL;
+            cJSON *replacement = NULL;
+
+            replace_me = cJSON_DetachItemFromObject(target, patch_child->string);
+
+            replacement = merge_patch(replace_me, patch_child);
+            if (replacement == NULL)
+            {
+                return NULL;
+            }
+
+            cJSON_AddItemToObject(target, patch_child->string, replacement);
+        }
+        patch_child = patch_child->next;
+    }
+    return target;
+}
+
+cJSON * cJSONUtils_MergePatch(cJSON *target, const cJSON * const patch)
+{
+    return merge_patch(target, patch);
 }

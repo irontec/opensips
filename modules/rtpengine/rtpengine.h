@@ -27,6 +27,7 @@
 #define _RTPENGINE_H
 
 #include "bencode.h"
+#include "../../ip_addr.h"
 #include "../../str.h"
 
 /* flags for set, node, and socket management */
@@ -36,13 +37,18 @@
 
 struct rtpe_node {
 	unsigned int		idx;			/* overall index */
+	unsigned int		set;			/* id of the set index */
 	str					rn_url;			/* unparsed, deletable, NULL-term */
 	int					rn_umode;
 	char				*rn_address;	/* substring of rn_url */
 	int					rn_disabled;	/* found unaccessible? */
 	unsigned			rn_weight;		/* for load balancing */
 	unsigned int		rn_recheck_ticks;
+	unsigned int		rn_last_ticks;
 	int					rn_flags;
+	socklen_t       ai_addrlen;
+	union sockaddr_union ai_addr;
+
 	struct rtpe_node	*rn_next;
 };
 

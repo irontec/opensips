@@ -698,13 +698,19 @@ static str
 get_sdp_line_separator(str *sdp)
 {
     char *ptr, *end_ptr, *sdp_end;
-    str separator;
+    str separator = { NULL, 0 };
 
     sdp_end = sdp->s + sdp->len;
 
-    ptr = find_line_starting_with(sdp, "v=", False);
-    end_ptr = findendline(ptr, sdp_end-ptr);
-    separator.s = ptr = end_ptr;
+	ptr = find_line_starting_with(sdp, "v=", False);
+	if (!ptr)
+		return separator;
+
+	end_ptr = findendline(ptr, sdp_end-ptr);
+	if (!end_ptr)
+		return separator;
+
+	separator.s = ptr = end_ptr;
     while ((*ptr=='\n' || *ptr=='\r') && ptr<sdp_end)
         ptr++;
     separator.len = ptr - separator.s;
@@ -1291,6 +1297,38 @@ remove_element(struct sip_msg *msg, str *element)
 }
 
 
+static Bool
+build_connection_line(char *buf, size_t buf_len, str *ip, str *separator)
+{
+    static const char prefix[] = "c=IN IP4 ";
+    size_t len;
+
+    if (!ip || !ip->s || ip->len < 0 || !separator ||
+        (separator->len && !separator->s) || separator->len < 0) {
+        LM_ERR("invalid SDP connection line data\n");
+        return False;
+    }
+
+    if (buf_len < sizeof(prefix) ||
+        (size_t)ip->len + (size_t)separator->len > buf_len - sizeof(prefix)) {
+        LM_ERR("SDP connection line is too long\n");
+        return False;
+    }
+
+    len = sizeof(prefix) - 1;
+    memcpy(buf, prefix, len);
+    memcpy(buf + len, ip->s, ip->len);
+    len += ip->len;
+    if (separator->len) {
+        memcpy(buf + len, separator->s, separator->len);
+        len += separator->len;
+    }
+    buf[len] = '\0';
+
+    return True;
+}
+
+
 // Functions dealing with the external mediaproxy helper
 //
 
@@ -1626,9 +1664,9 @@ use_media_proxy(struct sip_msg *msg, char *dialog_id, ice_candidate_data *ice_da
         stream = session.streams[i];
         if (stream.transport != TSupported) {
             if (!stream.local_ip && removed_session_ip) {
-                strcpy(buf, "c=IN IP4 ");
-                strncat(buf, session.ip.s, session.ip.len);
-                strncat(buf, session.separator.s, session.separator.len);
+                if (!build_connection_line(buf, sizeof(buf), &session.ip,
+                            &session.separator))
+                    return -1;
                 if (!insert_element(msg, stream.next_line, buf)) {
                     LM_ERR("failed to insert IP address in media stream number %d\n", i+1);
                     return -1;
@@ -1672,9 +1710,9 @@ use_media_proxy(struct sip_msg *msg, char *dialog_id, ice_candidate_data *ice_da
                 return -1;
             }
         } else if (!stream.local_ip && removed_session_ip) {
-            strcpy(buf, "c=IN IP4 ");
-            strncat(buf, tokens[0].s, tokens[0].len);
-            strncat(buf, session.separator.s, session.separator.len);
+            if (!build_connection_line(buf, sizeof(buf), &tokens[0],
+                        &session.separator))
+                return -1;
             if (!insert_element(msg, stream.next_line, buf)) {
                 LM_ERR("failed to insert IP address in media stream number %d\n", i+1);
                 return -1;
@@ -2029,5 +2067,3 @@ child_init(int rank)
 
     return 0;
 }
-
-

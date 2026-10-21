@@ -48,6 +48,7 @@ int seed_fb_interval = DEFAULT_SEED_FB_INTERVAL;
 int sync_timeout = DEFAULT_SYNC_TIMEOUT;
 int current_id = -1;
 int db_mode = 1;
+int clusterer_enable_rerouting = 1;
 
 str clusterer_db_url = {NULL, 0};
 str db_table = str_init("clusterer");
@@ -69,6 +70,9 @@ extern db_func_t dr_dbf;
 void *cl_srg=NULL;
 
 str node_st_sr_ident = str_init("node_states");
+
+long ping_timeout_us;
+long ping_interval_us;
 
 /* module interface functions */
 static int mod_init(void);
@@ -99,7 +103,7 @@ static void heartbeats_timer_handler(unsigned int ticks, void *param);
 static void heartbeats_utimer_handler(utime_t ticks, void *param);
 
 int cmd_broadcast_req(struct sip_msg *msg, int *cluster_id, str *gen_msg,
-									pv_spec_t *param_tag);
+									pv_spec_t *param_tag, int *all);
 int cmd_send_req(struct sip_msg *msg, int *cluster_id, int *node_id,
 								str *gen_msg, pv_spec_t *param_tag);
 int cmd_send_rpl(struct sip_msg *msg, int *cluster_id, int *node_id,
@@ -117,7 +121,8 @@ static const cmd_export_t cmds[] = {
 	{"cluster_broadcast_req", (cmd_function)cmd_broadcast_req, {
 		{CMD_PARAM_INT,0,0},
 		{CMD_PARAM_STR,0,0},
-		{CMD_PARAM_VAR|CMD_PARAM_OPT,0,0}, {0,0,0}},
+		{CMD_PARAM_VAR|CMD_PARAM_OPT,0,0},
+		{CMD_PARAM_INT|CMD_PARAM_OPT,0,0}, {0,0,0}},
 		REQUEST_ROUTE | FAILURE_ROUTE | ONREPLY_ROUTE | LOCAL_ROUTE | BRANCH_ROUTE | EVENT_ROUTE},
 	{"cluster_send_req", (cmd_function)cmd_send_req, {
 		{CMD_PARAM_INT,0,0},
@@ -171,6 +176,7 @@ static const param_export_t params[] = {
 		(void*)&shtag_modparam_func},
 	{"sync_packet_size",	INT_PARAM,	&sync_packet_size	},
 	{"dispatch_jobs",		INT_PARAM,	&dispatch_jobs		},
+	{"enable_rerouting",		INT_PARAM,	&clusterer_enable_rerouting	},
 	{0, 0, 0}
 };
 
@@ -230,7 +236,7 @@ static const mi_export_t mi_cmds[] = {
 
 
 static const pv_export_t mod_vars[] = {
-	{ {"cluster.sh_tag", sizeof("cluster.sh_tag")-1}, 1000, var_get_sh_tag,
+	{ str_const_init("cluster.sh_tag"), 1000, var_get_sh_tag,
 		var_set_sh_tag,  var_parse_sh_tag_name , 0, 0, 0 },
 	{ {0, 0}, 0, 0, 0, 0, 0, 0, 0 }
 };
@@ -411,6 +417,9 @@ static int mod_init(void)
 		LM_WARN("Invalid ping_timeout parameter, using default value\n");
 		ping_timeout = DEFAULT_PING_TIMEOUT;
 	}
+	ping_timeout_us = ping_timeout * 1000;
+	ping_interval_us = ping_interval * 1000000;
+
 	if (seed_fb_interval < 0) {
 		LM_WARN("Invalid seed_fallback_interval parameter, using default value\n");
 		seed_fb_interval = DEFAULT_SEED_FB_INTERVAL;
@@ -618,6 +627,7 @@ static mi_response_t *clusterer_set_status(const mi_params_t *params,
 	switch (try_get_mi_int_param(params, "node_id", &node_id)) {
 		case -1:
 			node_id = current_id;
+			/* fallback */
 		case 0:
 			if (node_id < 1)
 				return init_mi_error(400, MI_SSTR("Bad value for 'node_id'"));
@@ -1264,7 +1274,7 @@ static inline void generate_msg_tag(pv_value_t *tag_val, int cluster_id)
 }
 
 int cmd_broadcast_req(struct sip_msg *msg, int *cluster_id, str *gen_msg,
-									pv_spec_t *param_tag)
+									pv_spec_t *param_tag, int *all)
 {
 	pv_value_t tag_val;
 	int rc;
@@ -1277,7 +1287,7 @@ int cmd_broadcast_req(struct sip_msg *msg, int *cluster_id, str *gen_msg,
 		return -1;
 	}
 
-	rc = bcast_gen_msg(*cluster_id, gen_msg, &tag_val.rs);
+	rc = bcast_gen_msg(*cluster_id, gen_msg, &tag_val.rs, (all && *all));
 	switch (rc) {
 		case 0:
 			return 1;

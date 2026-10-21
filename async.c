@@ -342,18 +342,21 @@ int async_script_launch(struct sip_msg *msg, struct action* a,
 	if (report_route) {
 		ctx->report_route = dup_ref_script_route_in_shm( report_route, 0);
 		if (!ref_script_route_is_valid(ctx->report_route)) {
-			LM_ERR("failed dup resume route -> act in sync mode\n");
-			goto sync;
-		}
-
-		if (report_route_param) {
-			ctx->report_route_param.s = (char *)(ctx+1);
-			ctx->report_route_param.len = report_route_param->len;
-			memcpy(ctx->report_route_param.s, report_route_param->s,
-				report_route_param->len);
+			LM_ERR("failed dup resume route -> ignoring it\n");
+			if (ctx->report_route) {
+				shm_free(ctx->report_route);
+				ctx->report_route = NULL;
+			}
 		} else {
-			ctx->report_route_param.s = NULL;
-			ctx->report_route_param.len = 0;
+			if (report_route_param) {
+				ctx->report_route_param.s = (char *)(ctx+1);
+				ctx->report_route_param.len = report_route_param->len;
+				memcpy(ctx->report_route_param.s, report_route_param->s,
+					report_route_param->len);
+			} else {
+				ctx->report_route_param.s = NULL;
+				ctx->report_route_param.len = 0;
+			}
 		}
 	}
 
@@ -365,6 +368,8 @@ int async_script_launch(struct sip_msg *msg, struct action* a,
 			goto sync;
 		}
 	}
+
+	async_status = ASYNC_DONE;
 
 	/* done, return to the script */
 	return 1;
@@ -383,7 +388,7 @@ report:
 	if (ctx->report_route)
 		shm_free(ctx->report_route);
 	shm_free(ctx);
-	if (report_route==NULL)
+	if (!ref_script_route_check_and_update(report_route))
 		return 1;
 
 	/* run the report route inline */
@@ -393,12 +398,21 @@ report:
 		return -1;
 	}
 
+	if (report_route_param)
+		route_params_push_level(
+			sroutes->request[report_route->idx].name,
+			report_route_param, NULL,
+			launch_route_param_get);
+
 	bak_avps = set_avp_list(&report_avps);
+
 	swap_route_type( bk_rt, REQUEST_ROUTE);
-
 	run_top_route( sroutes->request[report_route->idx], req);
-
 	set_route_type( bk_rt );
+
+	if (report_route_param)
+		route_params_pop_level();
+
 	destroy_avp_list(&report_avps);
 	set_avp_list(bak_avps);
 

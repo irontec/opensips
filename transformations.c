@@ -23,10 +23,13 @@
  * \brief Support for transformations
  */
 
+/* make strptime available */
+#define _GNU_SOURCE
+#include <time.h>
+
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
-#include <time.h>
 #include <sys/types.h>
 #include <unistd.h>
 
@@ -54,6 +57,7 @@
 #include "sha1.h"
 #include "sha256.h"
 #include "sha512.h"
+#include "time_rec.h"
 
 #define TR_BUFFER_SIZE 65536
 
@@ -451,6 +455,38 @@ int tr_eval_string(struct sip_msg *msg, tr_param_t *tp, int subtype,
 					goto error;
 			}
 			val->rs.len = snprintf(_tr_buffer, TR_BUFFER_SIZE, "%x", val->ri);
+			if (val->rs.len < 0 || val->rs.len > TR_BUFFER_SIZE)
+				goto error;
+			val->ri = 0;
+			val->rs.s = _tr_buffer;
+			val->flags = PV_VAL_STR;
+			break;
+		case TR_S_DATE2UNIX:
+			if(!(val->flags&PV_VAL_STR))
+				goto error;
+
+			struct tm date_tm;
+
+			memcpy(_tr_buffer, val->rs.s, val->rs.len);
+			_tr_buffer[val->rs.len] = 0;
+
+			memset(&date_tm, 0, sizeof date_tm);
+
+			if (!strptime(_tr_buffer, "%a, %d %b %Y %H:%M:%S GMT", &date_tm)) {
+				LM_ERR("Failed to parse Date header field\n");
+				goto error;
+			}
+
+			_tz_set("");
+			snprintf(_tr_buffer, TR_BUFFER_SIZE, "%lld", (long long)mktime(&date_tm));
+			tz_reset();
+
+			if (strncmp(_tr_buffer, "-1", strlen("-1")) == 0) {
+				LM_ERR("Failed convert to UNIX time\n");
+				goto error;
+			}
+
+			val->rs.len = strlen(_tr_buffer);
 			if (val->rs.len < 0 || val->rs.len > TR_BUFFER_SIZE)
 				goto error;
 			val->ri = 0;
@@ -921,7 +957,8 @@ int tr_eval_string(struct sip_msg *msg, tr_param_t *tp, int subtype,
 				val->flags |= PV_VAL_STR;
 				break;
 			}
-			if(val->rs.len>TR_BUFFER_SIZE-1) {
+			if(val->rs.len>TR_BUFFER_SIZE-1 ||
+				calc_base64_encode_len(val->rs.len)>TR_BUFFER_SIZE) {
 				LM_ERR("b64encode value larger than buffer\n");
 				goto error;
 			}
@@ -1679,7 +1716,7 @@ int tr_eval_sdp(struct sip_msg *msg, tr_param_t *tp,int subtype,
 		case TR_SDP_STREAM_DEL:
 			/* determine the media type we are talking about
 			 * either by index or by name */
-			media.s = NULL;
+			media = STR_NULL;
 			entryNo = 0;
 			switch (tp->type) {
 				case TR_PARAM_NUMBER:
@@ -2911,6 +2948,9 @@ int tr_parse_string(str* in, trans_t *t)
 	} else if(name.len==7 && strncasecmp(name.s, "dec2hex", 7)==0) {
 		t->subtype = TR_S_DEC2HEX;
 		return 0;
+	} else if(name.len==9 && strncasecmp(name.s, "date2unix", 9)==0) {
+		t->subtype = TR_S_DATE2UNIX;
+		return 0;
 	} else if(name.len==13 && strncasecmp(name.s, "escape.common", 13)==0) {
 		t->subtype = TR_S_ESCAPECOMMON;
 		return 0;
@@ -3831,7 +3871,7 @@ int tr_parse_re(str *in,trans_t *t)
 		}
 		p++;
 		LM_DBG("preparing to parse param\n");
-		if (tr_parse_sparam(p, in, &tp, 0) == NULL)
+		if (tr_parse_sparam(p, in, &tp, 1) == NULL)
 			goto error;
 		t->params = tp;
 		tp = 0;

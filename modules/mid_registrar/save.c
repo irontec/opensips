@@ -121,13 +121,14 @@ void calc_ob_contact_expires(struct sip_msg* _m, param_t* _ep, int* _e,
 static int trim_to_single_contact(struct sip_msg *msg, str *aor, int expires)
 {
 	contact_t *c = NULL;
-	struct socket_info *send_sock;
+	const struct socket_info *send_sock;
 	struct lump *anchor = NULL;
 	char *buf;
 	int e, is_dereg = 1, len, len1;
 	struct hdr_field *ct;
 	union sockaddr_union _;
-	str extra_ct_params, esc_aor, *adv_host, *adv_port;
+	str extra_ct_params, esc_aor;
+	const str *adv_host, *adv_port;
 
 	/* get the source socket on the way to the next hop */
 	send_sock = uri2sock(msg, GET_NEXT_HOP(msg), &_, PROTO_NONE);
@@ -235,6 +236,14 @@ struct mr_ct_data {
 	int last_cseq;
 };
 
+struct mr_aor_data {
+	struct mid_reg_info *mri;
+	const str *ct_uri;
+	int expires_out;
+	int last_reg_ts;
+	int last_cseq;
+};
+
 static int mid_reg_store_ct_data(ucontact_t *c, void *info)
 {
 	struct mr_ct_data *data = (struct mr_ct_data *)info;
@@ -244,6 +253,19 @@ static int mid_reg_store_ct_data(ucontact_t *c, void *info)
 		data->expires_out, data->last_reg_ts, data->last_cseq);
 	if (rc != 0)
 		LM_ERR("failed to attach ucontact data - oom?\n");
+
+	return rc;
+}
+
+static int mid_reg_store_aor_data(urecord_t *r, void *info)
+{
+	struct mr_aor_data *data = (struct mr_aor_data *)info;
+	int rc;
+
+	rc = store_urecord_data(r, data->mri, data->ct_uri, data->expires_out,
+		data->last_reg_ts, data->last_cseq);
+	if (rc != 0)
+		LM_ERR("failed to attach urecord data - oom?\n");
 
 	return rc;
 }
@@ -272,7 +294,7 @@ static int overwrite_req_contacts(struct sip_msg *req,
 	urecord_t *r;
 	ucontact_t *uc;
 	struct sip_uri puri;
-	struct socket_info *send_sock;
+	const struct socket_info *send_sock;
 	struct lump *anchor;
 	str new_username;
 	char *lump_buf;
@@ -282,11 +304,12 @@ static int overwrite_req_contacts(struct sip_msg *req,
 	struct ct_mapping *ctmap;
 	struct list_head *_;
 	union sockaddr_union __;
-	str extra_ct_params, ctid_str, *adv_host, *adv_port;
+	str extra_ct_params, ctid_str;
+	const str *adv_host, *adv_port;
 
 	ul.lock_udomain(mri->dom, &mri->aor);
 	ul.get_urecord(mri->dom, &mri->aor, &r);
-	if (!r && ul.insert_urecord(mri->dom, &mri->aor, &r, 0) < 0) {
+	if (!r && ul.insert_urecord(mri->dom, &mri->aor, &r, 0, NULL, NULL) < 0) {
 		rerrno = R_UL_NEW_R;
 		LM_ERR("failed to insert new record structure\n");
 		goto out_err;
@@ -738,7 +761,8 @@ static inline unsigned int calc_buf_len(ucontact_t* c,int build_gruu,
 {
 	unsigned int len;
 	int qlen;
-	struct socket_info *sock;
+	int gruu_len;
+	const struct socket_info *sock;
 
 	len = 0;
 	while(c) {
@@ -757,7 +781,9 @@ static inline unsigned int calc_buf_len(ucontact_t* c,int build_gruu,
 					+ 1 /* dquote */
 					;
 			}
-			if (build_gruu && c->instance.s) {
+			if (build_gruu && c->instance.s &&
+				(gruu_len = calc_temp_gruu_len(c->aor, &c->instance,
+					&c->callid)) >= 0) {
 				sock = (c->sock)?(c->sock):(_m->rcv.bind_address);
 				/* pub gruu */
 				len += PUB_GRUU_SIZE
@@ -774,7 +800,7 @@ static inline unsigned int calc_buf_len(ucontact_t* c,int build_gruu,
 					+ 1 /* quote */
 					+ SIP_PROTO_SIZE
 					+ TEMP_GRUU_HEADER_SIZE
-					+ calc_temp_gruu_len(c->aor,&c->instance,&c->callid)
+					+ gruu_len
 					+ 1 /* @ */
 					+ sock->name.len
 					+ 1 /* : */
@@ -801,9 +827,9 @@ static inline unsigned int calc_buf_len(ucontact_t* c,int build_gruu,
 int build_contact(ucontact_t* c,struct sip_msg *_m)
 {
 	char *p, *cp, *tmpgr;
-	int fl, len,grlen;
+	int fl, len, grlen, gruu_len;
 	int build_gruu = 0;
-	struct socket_info *sock;
+	const struct socket_info *sock;
 
 	LM_DBG("building contact ...\n");
 
@@ -872,8 +898,17 @@ int build_contact(ucontact_t* c,struct sip_msg *_m)
 				*p++ = '\"';
 			}
 
-			if (build_gruu && c->instance.s) {
+			if (build_gruu && c->instance.s &&
+				(gruu_len = calc_temp_gruu_len(c->aor, &c->instance,
+					&c->callid)) >= 0) {
 				sock = (c->sock)?(c->sock):(_m->rcv.bind_address);
+				tmpgr = build_temp_gruu(c->aor, &c->instance, &c->callid,
+					&grlen);
+				if (!tmpgr) {
+					contact.data_len = 0;
+					return -1;
+				}
+
 				/* build pub GRUU */
 				memcpy(p,PUB_GRUU,PUB_GRUU_SIZE);
 				p += PUB_GRUU_SIZE;
@@ -905,10 +940,9 @@ int build_contact(ucontact_t* c,struct sip_msg *_m)
 				memcpy(p,TEMP_GRUU_HEADER,TEMP_GRUU_HEADER_SIZE);
 				p += TEMP_GRUU_HEADER_SIZE;
 
-				tmpgr = build_temp_gruu(c->aor,&c->instance,&c->callid,&grlen);
 				base64encode((unsigned char *)p,
 						(unsigned char *)tmpgr,grlen);
-				p += calc_temp_gruu_len(c->aor,&c->instance,&c->callid);
+				p += gruu_len;
 				*p++ = '@';
 				memcpy(p,sock->name.s,sock->name.len);
 				p += sock->name.len;
@@ -1030,12 +1064,16 @@ int append_contacts(ucontact_t *contacts, struct sip_msg *msg)
 	return 0;
 }
 
-int trim_contacts(urecord_t *r, int trims, const struct ct_match *match)
+static int trim_contacts(urecord_t *r, int trims, const struct ct_match *match,
+					ucontact_t *excl_ct)
 {
-	ucontact_t *uc;
+	ucontact_t *uc, *uc_next;
 
-	for (uc = r->contacts; uc && trims > 0; uc = uc->next) {
-		if (!VALID_CONTACT(uc, get_act_time()))
+	for (uc = r->contacts; uc && trims > 0; uc = uc_next) {
+		uc_next = uc->next;
+
+		if ((excl_ct && uc == excl_ct)
+		    || !VALID_CONTACT(uc, get_act_time()))
 			continue;
 
 		LM_DBG("overflow on inserting new contact -> removing <%.*s>\n",
@@ -1380,7 +1418,7 @@ update_usrloc:
 					goto error;
 				}
 
-				if (trim_contacts(r, vct - mri->max_contacts + 1, &mri->cmatch))
+				if (trim_contacts(r, vct - mri->max_contacts + 1, &mri->cmatch, NULL))
 					goto error;
 			}
 
@@ -1389,7 +1427,7 @@ update_usrloc:
 				ci->pre_replicate_cb = mid_reg_store_ct_data;
 				ct_data = (struct mr_ct_data){
 						mri, &_c->uri, ctmap->expires, e_out,
-						get_act_time(), ci->cseq
+						(int)(unsigned long)get_act_time(), ci->cseq
 					};
 				ci->pre_replicate_info = &ct_data;
 			}
@@ -1438,13 +1476,13 @@ update_usrloc:
 					goto error;
 				}
 
-				if (trim_contacts(r, vct - mri->max_contacts, &mri->cmatch))
+				if (trim_contacts(r, vct - mri->max_contacts, &mri->cmatch, c))
 					goto error;
 			}
 
 			if (reg_mode == MID_REG_THROTTLE_CT &&
 				store_ucontact_data(c, mri, &_c->uri, ctmap->expires, e_out,
-				                    get_act_time(), ci->cseq) != 0) {
+				                    (int)(unsigned long)get_act_time(), ci->cseq) != 0) {
 				LM_ERR("failed to update ucontact data - oom?\n");
 				goto error;
 			}
@@ -1468,12 +1506,11 @@ update_usrloc:
 				LM_ERR("failed to parse contact <%.*s>\n",
 						ctmap->req_ct_uri.len, ctmap->req_ct_uri.s);
 			} else if ( is_tcp_based_proto(uri.proto) ) {
-				if (e_max) {
+				if (e_max)
 					LM_WARN("multiple TCP contacts on single REGISTER\n");
-					if (e_out>e_max) e_max = e_out;
-				} else {
-					e_max = e_out;
-				}
+
+				if (ctmap->expires > e_max)
+					e_max = ctmap->expires;
 			}
 		}
 	}
@@ -1502,7 +1539,7 @@ update_usrloc:
 	remove_expires_hf(rpl);
 
 	if ( tcp_check && e_max>0 ) {
-		e_max -= get_act_time();
+		LM_DBG("ensure TCP conn lifetime of at least %d sec\n", (e_max + 10));
 		trans_set_dst_attr( &req->rcv, DST_FCNTL_SET_LIFETIME,
 			(void*)(long)(e_max + 10) );
 	}
@@ -1569,7 +1606,16 @@ static inline int save_restore_req_contacts(struct sip_msg *req,
 		if (!_c)
 			goto out;
 
-		if (ul.insert_urecord(mri->dom, _a, &r, 0) < 0) {
+		/* populate kv_storage before cluster replication so peers receive
+		 * a populated AoR INSERT packet (otherwise unregister_record() on
+		 * peers fails to find the 'from' key when the AoR later expires) */
+		struct mr_aor_data aor_data = {
+				mri, &_c->uri, e_out,
+				(int)(unsigned long)get_act_time(), cseq
+			};
+
+		if (ul.insert_urecord(mri->dom, _a, &r, 0,
+		                      mid_reg_store_aor_data, &aor_data) < 0) {
 			rerrno = R_UL_NEW_R;
 			LM_ERR("failed to insert new record structure\n");
 			goto out_err;
@@ -1578,7 +1624,7 @@ static inline int save_restore_req_contacts(struct sip_msg *req,
 
 	/* replicated AoRs will have an empty k/v store */
 	if (!ul.get_urecord_key(r, &ul_key_callid) && _c) {
-		if (store_urecord_data(r, mri, &_c->uri, e_out, get_act_time(),
+		if (store_urecord_data(r, mri, &_c->uri, e_out, (int)(unsigned long)get_act_time(),
 		                       cseq) != 0) {
 			LM_ERR("failed to attach urecord data - oom?\n");
 			goto out_err;
@@ -1649,7 +1695,7 @@ update_usrloc:
 					goto out_clear_err;
 				}
 
-				if (trim_contacts(r, vct - mri->max_contacts + 1, &mri->cmatch))
+				if (trim_contacts(r, vct - mri->max_contacts + 1, &mri->cmatch, NULL))
 					goto out_clear_err;
 			}
 
@@ -1698,7 +1744,7 @@ update_usrloc:
 					goto out_clear_err;
 				}
 
-				if (trim_contacts(r, vct - mri->max_contacts, &mri->cmatch))
+				if (trim_contacts(r, vct - mri->max_contacts, &mri->cmatch, c))
 					goto out_clear_err;
 			}
 
@@ -1727,12 +1773,11 @@ update_usrloc:
 				LM_ERR("failed to parse contact <%.*s>\n",
 				       ctmap->req_ct_uri.len, ctmap->req_ct_uri.s);
 			} else if ( is_tcp_based_proto(uri.proto) ) {
-				if (e_max) {
+				if (e_max)
 					LM_WARN("multiple TCP contacts on single REGISTER\n");
-					if (e_out>e_max) e_max = e_out;
-				} else {
-					e_max = e_out;
-				}
+
+				if (ctmap->expires > e_max)
+					e_max = ctmap->expires;
 			}
 		}
 	}
@@ -1756,7 +1801,7 @@ update_usrloc:
 	}
 
 	if ( tcp_check && e_max>0 ) {
-		e_max -= get_act_time();
+		LM_DBG("ensure TCP conn lifetime of at least %d sec\n", (e_max + 10));
 		trans_set_dst_attr( &req->rcv, DST_FCNTL_SET_LIFETIME,
 			(void*)(long)(e_max + 10) );
 	}
@@ -2212,7 +2257,7 @@ static int process_contacts_by_ct(struct sip_msg *msg, urecord_t *urec,
 			return 1;
 		}
 
-		ret = ul.get_ucontact(urec, &ct->uri, ci->callid, ci->cseq,
+		ret = ul.get_ucontact(urec, &ct->uri, ci->callid, REG_CSEQ_ADJUST(ci->cseq),
 			&_sctx->cmatch, &c);
 		if (ret == -1) {
 			LM_ERR("invalid cseq for aor <%.*s>\n",urec->aor.len,urec->aor.s);
@@ -2398,7 +2443,8 @@ static int process_contacts_by_aor(struct sip_msg *req, urecord_t *urec,
 			e = e_out;
 		}
 
-		ret = ul.get_ucontact(urec, &ct->uri, ci->callid, ci->cseq,
+
+		ret = ul.get_ucontact(urec, &ct->uri, ci->callid, REG_CSEQ_ADJUST(ci->cseq),
 			&_sctx->cmatch, &c);
 		if (ret == -1) {
 			LM_ERR("invalid cseq for aor <%.*s>\n",urec->aor.len,urec->aor.s);
@@ -2435,7 +2481,7 @@ static int process_contacts_by_aor(struct sip_msg *req, urecord_t *urec,
 					return -1;
 				}
 
-				if (trim_contacts(urec, vct - _sctx->max_contacts, &_sctx->cmatch))
+				if (trim_contacts(urec, vct - _sctx->max_contacts, &_sctx->cmatch, c))
 					return -1;
 			}
 
@@ -2475,7 +2521,7 @@ static int process_contacts_by_aor(struct sip_msg *req, urecord_t *urec,
 					return -1;
 				}
 
-				if (trim_contacts(urec, vct - _sctx->max_contacts + 1, &_sctx->cmatch))
+				if (trim_contacts(urec, vct - _sctx->max_contacts + 1, &_sctx->cmatch, NULL))
 					return -1;
 			}
 
@@ -2533,12 +2579,6 @@ int mid_reg_save(struct sip_msg *msg, udomain_t *d, struct save_flags *flags,
 	struct hdr_field *path;
 	int rc = -1, st, unlock_udomain = 0;
 
-	if (msg->REQ_METHOD != METHOD_REGISTER) {
-		LM_ERR("rejecting non-REGISTER SIP request (%d)\n", msg->REQ_METHOD);
-		rerrno = R_NOT_IMPL;
-		goto out_error;
-	}
-
 	rerrno = R_FINE;
 	memset(&sctx, 0, sizeof sctx);
 	sctx.cmatch.mode = CT_MATCH_NONE;
@@ -2552,6 +2592,12 @@ int mid_reg_save(struct sip_msg *msg, udomain_t *d, struct save_flags *flags,
 		sctx.min_expires = flags->min_expires;
 		sctx.max_expires = flags->max_expires;
 		sctx.cmatch = flags->cmatch;
+	}
+
+	if (msg->REQ_METHOD != METHOD_REGISTER) {
+		LM_ERR("rejecting non-REGISTER SIP request (%d)\n", msg->REQ_METHOD);
+		rerrno = R_NOT_IMPL;
+		goto out_error;
 	}
 
 	if (parse_reg_headers(msg) != 0) {

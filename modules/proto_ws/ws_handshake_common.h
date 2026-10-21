@@ -844,7 +844,7 @@ static int ws_parse_req_handshake(struct tcp_connection *c, char *msg, int len)
 	memset(&tmp_msg, 0, sizeof(struct sip_msg));
 	tmp_msg.len = len;
 	tmp_msg.buf = tmp_msg.unparsed = msg;
-	if (parse_headers(&tmp_msg, HDR_EOH_F, 0) < 0) {
+	if (parse_headers_aux(&tmp_msg, HDR_EOH_F, 0,0) < 0) {
 		LM_ERR("cannot parse headers\n%.*s\n", len, msg);
 		goto ws_error;
 	}
@@ -1122,7 +1122,7 @@ static int ws_parse_rpl_handshake(struct tcp_connection *c, char *msg, int len)
 	memset(&tmp_msg, 0, sizeof(struct sip_msg));
 	tmp_msg.len = len;
 	tmp_msg.buf = tmp_msg.unparsed = msg;
-	if (parse_headers(&tmp_msg, HDR_EOH_F, 0) < 0) {
+	if (parse_headers_aux(&tmp_msg, HDR_EOH_F, 0, 0) < 0) {
 		LM_ERR("cannot parse headers\n%.*s\n", len, msg);
 		goto ws_error;
 	}
@@ -1617,6 +1617,13 @@ static int ws_read_http(struct tcp_connection *c, struct tcp_req *r)
 					case '8':
 					case '9':
 						r->content_len=r->content_len*10+(*p-'0');
+						if (r->content_len>=TCP_BUF_SIZE) {
+							LM_ERR("Content-Length value %d bigger than the "
+								"reading buffer\n", r->content_len);
+							r->error = TCP_REQ_BAD_LEN;
+							r->state = H_SKIP;
+							r->content_len = 0;
+						}
 						break;
 					case '\r':
 					case ' ':

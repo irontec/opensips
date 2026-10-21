@@ -883,7 +883,7 @@ cdb_load_urecord_locations(const udomain_t *_d, const str *_aor, urecord_t *_r)
 		row = list_entry(_, cdb_row_t, list);
 		pair = cdb_dict_fetch(&home_ip_key, &row->dict);
 		if (!pair) {
-			LM_ERR("metadata with no home_ip, aor: %.*s", _aor->len, _aor->s);
+			LM_ERR("metadata with no home_ip, aor: %.*s\n", _aor->len, _aor->s);
 			continue;
 		}
 
@@ -975,7 +975,8 @@ urecord_t* cdb_load_urecord(const udomain_t* _d, const str *_aor)
 	}
 
 	if (res.count != 1)
-		LM_BUG("more than 1 result for AoR %.*s\n", _aor->len, _aor->s);
+		LM_ERR("more than 1 result (%d) for AoR %.*s, consider a full clear "
+		        "of the cacheDB keys\n", res.count, _aor->len, _aor->s);
 
 	r = NULL;
 
@@ -990,7 +991,8 @@ urecord_t* cdb_load_urecord(const udomain_t* _d, const str *_aor)
 		}
 	}
 
-	LM_ERR("no 'contacts' field for AoR %.*s\n", _aor->len, _aor->s);
+	LM_ERR("no 'contacts' field for AoR %.*s (foreign cacheDB data?!)\n",
+	        _aor->len, _aor->s);
 	goto out_null;
 
 have_contacts:
@@ -1178,7 +1180,7 @@ int mem_timer_udomain(udomain_t* _d)
 				if (exists_ulcb_type(UL_AOR_EXPIRE))
 					run_ul_callbacks(UL_AOR_EXPIRE, ptr, NULL);
 
-				if (location_cluster) {
+				if (location_cluster && ul_is_active_node()) {
 					if (cluster_mode == CM_FEDERATION_CACHEDB &&
 					    cdb_update_urecord_metadata(&ptr->aor, 1) != 0)
 						LM_ERR("failed to delete metadata, aor: %.*s\n",
@@ -1354,7 +1356,9 @@ out_err:
  * Create and insert a new record
  */
 int insert_urecord(udomain_t* _d, str* _aor, struct urecord** _r,
-                   char skip_replication)
+                   char skip_replication,
+                   ur_insert_pre_repl_cb_f pre_replicate_cb,
+                   void *pre_replicate_info)
 {
 	if (have_mem_storage()) {
 		if (mem_insert_urecord(_d, _aor, _r) < 0) {
@@ -1370,6 +1374,10 @@ int insert_urecord(udomain_t* _d, str* _aor, struct urecord** _r,
 				LM_ERR("failed to publish cachedb location for AoR %.*s\n",
 				       _aor->len, _aor->s);
 			}
+
+			if (pre_replicate_cb
+			        && pre_replicate_cb(*_r, pre_replicate_info) != 0)
+				LM_ERR("urecord pre-replication callback returned non-zero\n");
 
 			if (location_cluster)
 				replicate_urecord_insert(*_r);

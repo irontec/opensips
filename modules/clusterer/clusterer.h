@@ -45,8 +45,6 @@
 #define TAG_RAND_LEN 24
 #define TAG_FIX_MAXLEN 6	/* "XX-YY-" */
 
-#define MI_CMD_MAX_NR_PARAMS 15
-
 /* node flags */
 #define NODE_STATE_ENABLED	(1<<0)
 #define NODE_EVENT_DOWN		(1<<1)
@@ -191,7 +189,7 @@ unsigned long clusterer_get_num_nodes(int state);
 
 enum clusterer_send_ret send_gen_msg(int cluster_id, int node_id, str *gen_msg,
 										str *exchg_tag, int req_like);
-enum clusterer_send_ret bcast_gen_msg(int cluster_id, str *gen_msg, str *exchg_tag);
+enum clusterer_send_ret bcast_gen_msg(int cluster_id, str *gen_msg, str *exchg_tag, int all);
 enum clusterer_send_ret send_mi_cmd(int cluster_id, int dst_id, str cmd_name,
 									mi_item_t *cmd_params_arr, int no_params);
 enum clusterer_send_ret bcast_remove_node(int cluster_id, int target_node);

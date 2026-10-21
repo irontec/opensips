@@ -3,14 +3,14 @@ Section: net
 Priority: optional
 Maintainer: Răzvan Crainea <razvan@opensips.org>
 Build-Depends: bison,
-               debhelper (>= 9),
+               debhelper (>= 10),
                default-libmysqlclient-dev | libmysqlclient-dev,
                debhelper (>= 9.20160709) | dh-systemd (>= 1.5),
                dpkg-dev (>= 1.16.1.1),
                quilt,
                flex,
                libconfuse-dev,
-               libcurl4-gnutls-dev,
+               libcurl4-openssl-dev,
                libdb-dev (>= 4.6.19),
                libfdcore6 (>= 1.2.1) | base-files,
                libfdproto6 (>= 1.2.1) | base-files,
@@ -25,10 +25,14 @@ Build-Depends: bison,
                liblua5.1-0-dev,
                libmemcached-dev,
                libmicrohttpd-dev,
+               libmnl-dev,
+               libjwt-dev | base-files,
                libbson-dev | base-files,
                libmongoc-dev | base-files,
                libncurses5-dev,
-               libpcre3-dev,
+               opentelemetry-cpp-dev <opentelemetry>,
+               libpcre2-dev <!nopcre2>,
+               libpcre3-dev <nopcre2>,
                libperl-dev,
                libpq-dev,
                librabbitmq-dev,
@@ -69,7 +73,7 @@ Description: very fast and configurable SIP server
  XMLRPC Interface.
  .
  This package contains the main OpenSIPS binary along with the principal modules
- and support binaries including opensipsmc configuration tool.
+ and support binaries.
 
 Package: opensips-auth-modules
 Architecture: any

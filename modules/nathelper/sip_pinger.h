@@ -272,7 +272,7 @@ build_branch(char *branch, int *size,
 		old_state = p_cell->state;
 		p_cell->state = PING_CELL_STATE_PINGING;
 		p_cell->ct_flags = ct_flags;
-		p_cell->timestamp = timestamp;
+		p_cell->timestamp = (unsigned int)(unsigned long)timestamp;
 		p_cell->last_send_time = timeval_st;
 
 		/* we get the label that assures us that the via is unique */
@@ -346,13 +346,13 @@ out_nospace:
 
 /* build the buffer of a SIP ping request */
 static inline char*
-build_sipping(udomain_t *d, str *curi, struct socket_info* s,str *path,
+build_sipping(udomain_t *d, str *curi, const struct socket_info* s,str *path,
 		int *len_p, ucontact_coords ct_coords, int ct_flags)
 {
 #define s_len(_s) (sizeof(_s)-1)
 	static char buf[MAX_SIPPING_SIZE];
 	char *p, proto_str[PROTO_NAME_MAX_SIZE+1];
-	str *address, *port;
+	const str *address, *port;
 	str st;
 	int len;
 

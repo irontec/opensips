@@ -10,14 +10,18 @@ auto_gen=
 NAME=python.so
 
 ifeq (,$(PYTHON))
-PYTHON=python
+PYTHON := $(shell command -v python3 2>/dev/null || command -v python 2>/dev/null)
 endif
 
-PYTHON_VERSION=${shell ${PYTHON} -c "import distutils.sysconfig;print(distutils.sysconfig.get_config_var('VERSION'))"}
-PYTHON_LIBDIR=${shell ${PYTHON} -c "import distutils.sysconfig;print(distutils.sysconfig.get_config_var('LIBDIR'))"}
-PYTHON_LDFLAGS=${shell ${PYTHON} -c "import distutils.sysconfig;print(distutils.sysconfig.get_config_var('LINKFORSHARED'))"}
-PYTHON_LDLIB=${shell ${PYTHON} -c "import distutils.sysconfig;print(distutils.sysconfig.get_config_var('LDLIBRARY'))" | sed 's/^lib\(python.*\)\.so/\1/'}
-PYTHON_INCDIR=${shell ${PYTHON} -c "import distutils.sysconfig;print(distutils.sysconfig.get_python_inc())"}
+ifeq (,$(PYTHON))
+$(error Python interpreter not found; install python3 or set PYTHON=/path/to/python)
+endif
+
+PYTHON_VERSION=${shell ${PYTHON} -c "import sysconfig;print(sysconfig.get_config_var('VERSION'))"}
+PYTHON_LIBDIR=${shell ${PYTHON} -c "import sysconfig;print(sysconfig.get_config_var('LIBDIR'))"}
+PYTHON_LDFLAGS=${shell ${PYTHON} -c "import sysconfig;print(sysconfig.get_config_var('LINKFORSHARED'))"}
+PYTHON_LDLIB=${shell ${PYTHON} -c "import sysconfig;print(sysconfig.get_config_var('LDLIBRARY')[3:-3])"}
+PYTHON_INCDIR=${shell ${PYTHON} -c "import sysconfig;print(sysconfig.get_config_var('INCLUDEPY'))"}
 
 LIBS += -L${PYTHON_LIBDIR} ${PYTHON_LDFLAGS} -l${PYTHON_LDLIB}
 
