@@ -27,15 +27,26 @@
 #ifndef _EV_RMQ_H_
 #define _EV_RMQ_H_
 
+#ifdef RABBITMQ_MODERN_HDRS
+#include <rabbitmq-c/amqp.h>
+#include <rabbitmq-c/framing.h>
+#else
 #include <amqp.h>
 #include <amqp_framing.h>
+#endif
 #if defined AMQP_VERSION && AMQP_VERSION >= 0x00040000
   #define AMQP_VERSION_v04
+#ifdef RABBITMQ_MODERN_HDRS
+#include <rabbitmq-c/tcp_socket.h>
+#include <rabbitmq-c/ssl_socket.h>
+#else
 #include <amqp_tcp_socket.h>
 #include <amqp_ssl_socket.h>
 #endif
+#endif
 
 #include "../tls_mgm/api.h"
+#include "rmq_servers.h"
 
 /* transport protocols name */
 #define RMQ_NAME	"rabbitmq"
@@ -47,19 +58,14 @@
 
 #define RMQ_DEFAULT_UP		"guest"
 #define RMQ_DEFAULT_UP_LEN	(sizeof(RMQ_DEFAULT_UP))
-#define RMQ_DEFAULT_MAX		131072
 #define RMQ_DEFAULT_VHOST	"/"
 #define RMQ_DEFAULT_PORT	5672
 #define RMQ_DEFAULT_TLS_PORT 5671
 
-#define RMQ_PARAM_RKEY	(1 << 1)
-#define RMQ_PARAM_CONN	(1 << 2)
-#define RMQ_PARAM_CHAN	(1 << 3)
 #define RMQ_PARAM_USER	(1 << 4)
 #define RMQ_PARAM_PASS	(1 << 5)
 #define RMQ_PARAM_EKEY	(1 << 6)
 #define RMQ_PARAM_TLS	(1 << 7)
-#define RMQ_PARAM_PERS	(1 << 8)
 
 #define RMQ_EXCHANGE_S		"exchange="
 #define RMQ_EXCHANGE_LEN	(sizeof(RMQ_EXCHANGE_S)-1)
@@ -68,21 +74,23 @@
 #define RMQ_PERSISTENT_S		"persistent"
 #define RMQ_PERSISTENT_LEN		(sizeof(RMQ_PERSISTENT_S)-1)
 
+#define RMQ_DEFAULT_CHANNEL 1
+
 typedef struct _rmq_params {
 	str routing_key;
-	str exchange;
-	str user;
-	str pass;
-	str tls_dom_name;
-	struct tls_domain *tls_dom;
-	amqp_connection_state_t conn;
-	int channel;
-	int flags;
-	int heartbeat;
+	rmq_connection_t conn;
 } rmq_params_t;
 
 extern int use_tls;
 extern struct tls_mgm_binds tls_api;
+extern struct timeval conn_timeout_tv;
+#if defined AMQP_VERSION && AMQP_VERSION >= 0x00090000
+extern struct timeval rpc_timeout_tv;
+
+int rmq_error(char const *context, amqp_rpc_reply_t x);
+void rmq_destroy_connection(rmq_connection_t *conn, int temporarely, int force);
+int rmq_server_reconnect(rmq_connection_t *conn, char *address, int port, int max_frames, str cid);
+int amqp_check_status(rmq_connection_t *conn, int r, int* retry, str cid);
 
 #endif
-
+#endif

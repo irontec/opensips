@@ -432,6 +432,8 @@ static void handle_new_stream(stream_send_t *stream)
 		}
 	}
 
+	return;
+
 error:
 	if (stream->async_ctx.status_cb)
 		stream_dispatch_status_cb(&stream->async_ctx, EVI_STATUS_FAIL);
@@ -547,7 +549,7 @@ static void handle_reply_jsonrpc(struct stream_con *con)
 		buf.len -= bytes_read;
 		buf.s += bytes_read;
 
-		if (buf.len) {
+		if (buf.len > 0) {
 			/* XXX: this was not tested! */
 			/* still have stuff to parse - move it in the connection */
 			if (con->pending_buffer.s) {
@@ -574,7 +576,7 @@ static void handle_reply_jsonrpc(struct stream_con *con)
 			}
 		} else if (con->pending_buffer.len) {
 			pkg_free(con->pending_buffer.s);
-			con->pending_buffer.len = 0;
+			con->pending_buffer = STR_NULL;
 			con->pending_reads = 0;
 		}
 	} while (reply && buf.len);

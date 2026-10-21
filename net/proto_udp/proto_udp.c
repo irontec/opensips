@@ -43,11 +43,12 @@
 static int mod_init(void);
 static int proto_udp_init(struct proto_info *pi);
 static int proto_udp_init_listener(struct socket_info *si);
-static int proto_udp_send(struct socket_info* send_sock,
-		char* buf, unsigned int len, union sockaddr_union* to,
+static int proto_udp_bind_listener(struct socket_info *si);
+static int proto_udp_send(const struct socket_info* send_sock,
+		char* buf, unsigned int len, const union sockaddr_union* to,
 		unsigned int id);
 
-static int udp_read_req(struct socket_info *src, int* bytes_read);
+static int udp_read_req(const struct socket_info *src, int* bytes_read);
 
 static callback_list* cb_list = NULL;
 
@@ -104,10 +105,11 @@ static int proto_udp_init(struct proto_info *pi)
 	pi->default_port		= udp_port;
 
 	pi->tran.init_listener	= proto_udp_init_listener;
+	pi->tran.bind_listener	= proto_udp_bind_listener;
 	pi->tran.send			= proto_udp_send;
 
 	pi->net.flags			= PROTO_NET_USE_UDP;
-	pi->net.read			= (proto_net_read_f)udp_read_req;
+	pi->net.dgram.read		= udp_read_req;
 
 	return 0;
 }
@@ -120,8 +122,12 @@ static int proto_udp_init_listener(struct socket_info *si)
 	return udp_init_listener(si, O_NONBLOCK);
 }
 
+static int proto_udp_bind_listener(struct socket_info *si)
+{
+	return udp_bind_listener(si);
+}
 
-static int udp_read_req(struct socket_info *si, int* bytes_read)
+static int udp_read_req(const struct socket_info *si, int* bytes_read)
 {
 	struct receive_info ri;
 	int len;
@@ -133,7 +139,7 @@ static int udp_read_req(struct socket_info *si, int* bytes_read)
 
 	fromlen=sockaddru_len(si->su);
 	/* coverity[overrun-buffer-arg: FALSE] - union has 28 bytes, CID #200029 */
-	len=recvfrom(bind_address->socket, buf, BUF_SIZE,0,&ri.src_su.s,&fromlen);
+	len=recvfrom(si->socket, buf, BUF_SIZE,0,&ri.src_su.s,&fromlen);
 	if (len==-1){
 		if (errno==EAGAIN)
 			return 0;
@@ -198,8 +204,8 @@ static int udp_read_req(struct socket_info *si, int* bytes_read)
  * \param to destination address
  * \return -1 on error, the return value from sento on success
  */
-static int proto_udp_send(struct socket_info* source,
-		char* buf, unsigned int len, union sockaddr_union* to,
+static int proto_udp_send(const struct socket_info* source,
+		char* buf, unsigned int len, const union sockaddr_union* to,
 		unsigned int id)
 {
 	int n, tolen;

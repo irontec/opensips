@@ -138,58 +138,6 @@ struct srec_buffer {
 		tmp.s = int2str(_i, &tmp.len); \
 		SIPREC_COPY_STR(tmp, _b); \
 	} while(0)
-#define SIPREC_COPY_CHAR(_c, _b); \
-	do { \
-		SIPREC_ENSURE_SIZE(1, _b); \
-		(_b)->buffer->s[(_b)->buffer->len++] = (_c); \
-	} while(0)
-
-#if 0
-static int srs_build_sdp(struct src_sess *sess, struct srec_buffer *buf)
-{
-	int p;
-	str media_ip;
-	struct srs_sdp_stream *stream;
-	struct list_head *it;
-	/*
-	 * SDP body format we use:
-	 *
-	 * v=0
-	 * o=- <timestamp> <version> IN IP4 <mediaip>
-	 * s=-
-	 * c=IN IP4 <mediaip>
-	 * t=0 0
-	 * <streams*>
-	 */
-	str header1 = str_init("v=0" CRLF "o=- ");
-	str header2 = str_init(" IN IP4 ");
-	str header3 = str_init(CRLF "s=-" CRLF "c=IN IP4 ");
-	str header4 = str_init("t=0 0" CRLF);
-	str localh = str_init("127.0.0.1");
-	str crlf_str = str_init(CRLF);
-
-	media_ip = (sess->media.s?sess->media:localh);
-
-	SIPREC_COPY_STR(header1, buf);
-	SIPREC_COPY_INT(sess->ts, buf);
-	SIPREC_COPY_CHAR(' ', buf);
-	SIPREC_COPY_INT(sess->version, buf);
-	SIPREC_COPY_STR(header2, buf);
-	SIPREC_COPY_STR(media_ip, buf);
-	SIPREC_COPY_STR(header3, buf);
-	SIPREC_COPY_STR(media_ip, buf);
-	SIPREC_COPY_STR(crlf_str, buf);
-	SIPREC_COPY_STR(header4, buf);
-	for (p = 0; p < sess->participants_no; p++) {
-		list_for_each(it, &sess->participants[p].streams) {
-			stream = list_entry(it, struct srs_sdp_stream, list);
-			SIPREC_COPY_STR(stream->body, buf);
-		}
-	}
-
-	return 1;
-}
-#endif
 
 #define SIPREC_COPY_OPEN_TAG(_t, _b) \
 		SIPREC_COPY("<" _t ">", _b);
@@ -201,6 +149,48 @@ static int srs_build_sdp(struct src_sess *sess, struct srec_buffer *buf)
 		tmp.s = (char *)_u; \
 		tmp.len = SIPREC_UUID_LEN; \
 		SIPREC_COPY_STR(tmp, buf); \
+	} while(0)
+
+static int siprec_get_xml_size(str *b)
+{
+	int out = 0, i;
+	for (i = 0; i < b->len; i++) {
+		switch ((unsigned char)b->s[i]) {
+			case '&':  out += 5; break;  // &amp;
+			case '<':  out += 4; break;  // &lt;
+			case '>':  out += 4; break;  // &gt;
+			case '"':  out += 6; break;  // &quot;
+			case '\'': out += 6; break;  // &apos;
+			default:   out += 1; break;
+		}
+	}
+	return out;
+}
+
+static void siprec_copy_xml(str *s, struct srec_buffer *b)
+{
+	int i, rlen;
+	const char *rep;
+
+	for (i = 0; i < s->len; i++) {
+		switch (s->s[i]) {
+			case '&':  rep = "&amp;";  rlen = 5; break;
+			case '<':  rep = "&lt;";   rlen = 4; break;
+			case '>':  rep = "&gt;";   rlen = 4; break;
+			case '"':  rep = "&quot;"; rlen = 6; break;
+			case '\'': rep = "&apos;"; rlen = 6; break;
+			default:
+				b->buffer->s[b->buffer->len++] = s->s[i];
+				continue;
+        }
+		memcpy(b->buffer->s + b->buffer->len, rep, rlen);
+        b->buffer->len += rlen;
+    }
+}
+#define SIPREC_COPY_VAL(_s, _b) \
+	do { \
+		SIPREC_ENSURE_SIZE(siprec_get_xml_size(&_s), _b); \
+		siprec_copy_xml(&_s, _b); \
 	} while(0)
 
 static int srs_build_xml(struct src_sess *sess, struct srec_buffer *buf)
@@ -221,29 +211,49 @@ static int srs_build_xml(struct src_sess *sess, struct srec_buffer *buf)
 	SIPREC_COPY_CLOSE_TAG("datamode", buf);
 	if (sess->group.s) {
 		SIPREC_COPY("\r\n\t<group group_id=\"", buf);
-		SIPREC_COPY_STR(sess->group, buf);
-		SIPREC_COPY("\"/>", buf);
+		SIPREC_COPY_VAL(sess->group, buf);
+		SIPREC_COPY("\">", buf);
+
+		if (sess->group_custom_extension.s) {
+			LM_DBG("group_custom_extension: %.*s\n", sess->group_custom_extension.len, sess->group_custom_extension.s);
+			LM_DBG("group_custom_extension.len: %d\n", sess->group_custom_extension.len);
+
+			// add group custom extensions
+			SIPREC_COPY("\r\n\t\t", buf);
+			SIPREC_COPY_STR(sess->group_custom_extension, buf);
+		}
+
+		SIPREC_COPY("\r\n\t</group>", buf);
 	}
+
 	SIPREC_COPY("\r\n\t<session session_id=\"", buf);
 	SIPREC_COPY_UUID(sess->uuid, buf);
-	if (!sess->group.s && !sess->dlg)
+	if (!sess->group.s && !sess->ctx->dlg && !sess->session_custom_extension.s)
 		SIPREC_COPY("\"/>\r\n", buf);
 	else {
 		SIPREC_COPY("\">", buf);
-		if (sess->dlg) {
+		if (sess->ctx->dlg) {
 			SIPREC_COPY("\r\n\t\t", buf);
 			SIPREC_COPY_OPEN_TAG("sipSessionID", buf);
-			SIPREC_COPY_STR(sess->dlg->callid, buf);
+			SIPREC_COPY_VAL(sess->ctx->dlg->callid, buf);
 			SIPREC_COPY_CLOSE_TAG("sipSessionID", buf);
 		}
 		if (sess->group.s) {
 			SIPREC_COPY("\r\n\t\t", buf);
 			SIPREC_COPY_OPEN_TAG("group-ref", buf);
-			SIPREC_COPY_STR(sess->group, buf);
+			SIPREC_COPY_VAL(sess->group, buf);
 			SIPREC_COPY_CLOSE_TAG("group-ref", buf);
 		}
+
+		if (sess->session_custom_extension.s) {
+			// add session custom extensions
+			SIPREC_COPY("\r\n\t\t", buf);
+			SIPREC_COPY_STR(sess->session_custom_extension, buf);
+		}
+
 		SIPREC_COPY("\r\n\t</session>\r\n", buf);
 	}
+
 	for (p = 0; p < sess->participants_no; p++) {
 		if (!sess->participants[p].aor.s && !sess->participants[p].xml_val.s)
 			continue;
@@ -385,7 +395,7 @@ int srs_build_body(struct src_sess *sess, str *sdp, str *body)
 	SIPREC_COPY_STR(siprec_content_type, &buf);
 	SIPREC_COPY_STR(siprec_content_disposition, &buf);
 	SIPREC_COPY(CRLF, &buf);
-	
+
 	if (srs_build_xml(sess, &buf) < 0)
 		return -1;
 

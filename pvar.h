@@ -59,6 +59,8 @@
 #define PV_VAL_PKG			32
 #define PV_VAL_SHM			64
 
+#define PV_PARAM_PVV_SHM	1
+
 /* @v: a (pv_value_t *) */
 #define pvv_is_int(v) \
 	((v)->flags & (PV_VAL_INT|PV_TYPE_INT) && \
@@ -131,7 +133,8 @@ enum _pv_type {
 	PVT_LINE_NUMBER,      PVT_CFG_FILE_NAME,     PVT_LOG_LEVEL,
 	PVT_XLOG_LEVEL,       PVT_AF,                PVT_HDR_NAME,
 	PVT_SOCKET_IN,        PVT_SOCKET_OUT,        PVT_BRANCH_FLAG,
-	PVT_MSG_FLAG,
+	PVT_SDP,              PVT_SDP_LINE,          PVT_SDP_STREAM,
+	PVT_SDP_SESSION,      PVT_MSG_FLAG,
 	/* registered by json module */
 	PVT_JSON,
 	/* registered by xml module */
@@ -177,6 +180,7 @@ typedef struct _pv_param
 	pv_name_t    pvn; /*!< PV name */
 	pv_index_t   pvi; /*!< PV index */
 	str          pvv; /*!< PV value buffer */
+	int          pvv_flags; /*!< ownership flags for pvv */
 } pv_param_t, *pv_param_p;
 
 typedef int (*pv_getf_t) (struct sip_msg*,  pv_param_t*, pv_value_t*);
@@ -216,7 +220,7 @@ typedef int (*pv_init_param_f)(pv_spec_p sp, int param);
  * - $(class_name(inner_name)[index]{transformation})
  */
 typedef struct _pv_export {
-	const str name;                /*!< class name of PV */
+	const str_const name;          /*!< class name of PV */
 	pv_type_t type;                /*!< type of PV */
 	pv_getf_t  getf;               /*!< function to get the value */
 	pv_setf_t  setf;               /*!< function to set the value */
@@ -237,10 +241,15 @@ typedef struct _pv_elem
 	struct _pv_elem *next;
 } pv_elem_t, *pv_elem_p;
 
+
+extern const pv_value_t pv_true;
+extern const pv_value_t pv_false;
+
 extern int pv_print_buf_size;
 int init_pvar_support(void);
 
 int pv_print_spec(struct sip_msg* msg, const pv_spec_p sp, char *buf, int *len);
+/* @return: the @in pointer is moved immediately after the spec (+1) */
 char* pv_parse_spec(const str *in, const pv_spec_p sp);
 int pv_get_spec_value(struct sip_msg* msg, const pv_spec_p sp, pv_value_t *value);
 int pv_printf(struct sip_msg* msg, pv_elem_p list, char *buf, int *len);

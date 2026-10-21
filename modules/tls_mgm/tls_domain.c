@@ -33,6 +33,11 @@
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301  USA
  */
 
+/* needed to expose FNM_CASEFOLD from <fnmatch.h> on glibc */
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE
+#endif
+
 #include "../../mem/mem.h"
 #include "../../lib/csv.h"
 #include "tls_domain.h"
@@ -97,11 +102,14 @@ void map_remove_tls_dom(struct tls_domain *dom)
 
 		val = iterator_val(&it_tmp);
 		doms_array = (struct dom_filt_array *)*val;
-		for (i = 0; i < doms_array->size; i++)
+		for (i = 0; i < doms_array->size;)
 			if (doms_array->arr[i].dom_link == dom) {
 				for (j = i + 1; j < doms_array->size; j++)
 					doms_array->arr[j-1] = doms_array->arr[j];
 				doms_array->size--;
+			}
+			else {
+				i++;
 			}
 		if (doms_array->size == 0) {
 			map_free_node(doms_array);
@@ -130,12 +138,14 @@ void tls_free_domain(struct tls_domain *dom)
 		while (m_it) {
 			m_tmp = m_it;
 			m_it = m_it->next;
+			shm_free(m_tmp->s.s);
 			shm_free(m_tmp);
 		}
 		m_it = dom->match_addresses;
 		while (m_it) {
 			m_tmp = m_it;
 			m_it = m_it->next;
+			shm_free(m_tmp->s.s);
 			shm_free(m_tmp);
 		}
 
@@ -398,7 +408,9 @@ tls_find_domain_by_filters(struct ip_addr *ip, unsigned short port,
 	for (i = 0; i < dom_array->size; i++) {
 		memcpy(fnm_s, domain_filter->s, domain_filter->len);
 		fnm_s[domain_filter->len] = 0;
-		if (!fnmatch(dom_array->arr[i].hostname->s.s, fnm_s, 0)) {
+		/* SNI hostnames are DNS names, so match case-insensitively
+		 * (RFC 6066 / RFC 4343) */
+		if (!fnmatch(dom_array->arr[i].hostname->s.s, fnm_s, FNM_CASEFOLD)) {
 			ref_tls_dom(dom_array->arr[i].dom_link);
 			if (dom_lock)
 				lock_stop_read(dom_lock);

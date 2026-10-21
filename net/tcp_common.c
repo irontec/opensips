@@ -145,8 +145,8 @@ int tcp_connect_blocking(int fd, const struct sockaddr *servaddr,
 			tcp_connect_timeout);
 }
 
-int tcp_sync_connect_fd(union sockaddr_union* src, union sockaddr_union* dst,
-                 enum sip_protos proto, struct tcp_conn_profile *prof, enum si_flags flags)
+int tcp_sync_connect_fd(const union sockaddr_union* src, const union sockaddr_union* dst,
+                 enum sip_protos proto, const struct tcp_conn_profile *prof, enum si_flags flags, int sock_tos)
 {
 	int s;
 	union sockaddr_union my_name;
@@ -158,7 +158,7 @@ int tcp_sync_connect_fd(union sockaddr_union* src, union sockaddr_union* dst,
 		goto error;
 	}
 
-	if (tcp_init_sock_opt(s, prof, flags)<0){
+	if (tcp_init_sock_opt(s, prof, flags, sock_tos)<0){
 		LM_ERR("tcp_init_sock_opt failed\n");
 		goto error;
 	}
@@ -186,14 +186,14 @@ error:
 	return -1;
 }
 
-struct tcp_connection* tcp_sync_connect(struct socket_info* send_sock,
-               union sockaddr_union* server, struct tcp_conn_profile *prof,
+struct tcp_connection* tcp_sync_connect(const struct socket_info* send_sock,
+               const union sockaddr_union* server, struct tcp_conn_profile *prof,
                int *fd, int send2main)
 {
 	struct tcp_connection* con;
 	int s;
 
-	s = tcp_sync_connect_fd(&send_sock->su, server, send_sock->proto, prof, send_sock->flags);
+	s = tcp_sync_connect_fd(&send_sock->su, server, send_sock->proto, prof, send_sock->flags, send_sock->tos);
 	if (s < 0)
 		return NULL;
 
@@ -207,8 +207,8 @@ struct tcp_connection* tcp_sync_connect(struct socket_info* send_sock,
 	return con;
 }
 
-int tcp_async_connect(struct socket_info* send_sock,
-            union sockaddr_union* server, struct tcp_conn_profile *prof,
+int tcp_async_connect(const struct socket_info* send_sock,
+            const union sockaddr_union* server, struct tcp_conn_profile *prof,
             int timeout, struct tcp_connection** c, int *ret_fd, int send2main)
 {
 	int fd, n;
@@ -237,7 +237,7 @@ int tcp_async_connect(struct socket_info* send_sock,
 		return -1;
 	}
 
-	if (tcp_init_sock_opt(fd, prof, send_sock->flags)<0){
+	if (tcp_init_sock_opt(fd, prof, send_sock->flags, send_sock->tos)<0){
 		LM_ERR("tcp_init_sock_opt failed\n");
 		goto error;
 	}
@@ -517,8 +517,8 @@ int tcp_async_add_chunk(struct tcp_connection *con, char *buf,
 		lock_get(&con->write_lock);
 
 	if (con->async->allocated == con->async->pending) {
-		LM_ERR("We have reached the limit of max async postponed chunks %d\n",
-				con->async->pending);
+		LM_ERR("We have reached the limit of max async postponed chunks %d "
+			"on conn %p / %u\n", con->async->pending, con, con->id);
 		if (lock)
 			lock_release(&con->write_lock);
 		shm_free(c);

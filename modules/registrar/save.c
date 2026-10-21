@@ -156,7 +156,7 @@ static inline int no_contacts(udomain_t* _d, struct save_ctx *_sctx,
 static int set_sock_hdr(struct sip_msg *msg, ucontact_info_t *ci,
                         unsigned int reg_flags)
 {
-	struct socket_info *sock;
+	const struct socket_info *sock;
 	struct hdr_field *hf;
 	str socks;
 	str hosts;
@@ -260,7 +260,7 @@ static inline int insert_contacts(struct sip_msg* _m, contact_t* _c,
 		}
 
 		if (r==0) {
-			if (ul.insert_urecord(_d, _a, &r, 0) < 0) {
+			if (ul.insert_urecord(_d, _a, &r, 0, NULL, NULL) < 0) {
 				rerrno = R_UL_NEW_R;
 				LM_ERR("failed to insert new record structure\n");
 				goto error;
@@ -399,7 +399,7 @@ static inline int update_contacts(struct sip_msg* _m, urecord_t* _r,
 		calc_contact_expires(_m, _c->expires, &e, _sctx);
 
 		/* search for the contact*/
-		ret = ul.get_ucontact( _r, &_c->uri, ci->callid, ci->cseq,
+		ret = ul.get_ucontact( _r, &_c->uri, ci->callid, REG_CSEQ_ADJUST(ci->cseq),
 			&_sctx->cmatch, &c);
 		if (ret==-1) {
 			LM_ERR("invalid cseq for aor <%.*s>\n",_r->aor.len,_r->aor.s);
@@ -721,7 +721,7 @@ return_minus_one:
 	return -1;
 }
 
-#define MAX_FORCED_BINDING_LEN 256
+#define MAX_FORCED_BINDING_LEN 512
 int save(struct sip_msg* _m, void* _d, void* _f, str* _s, str* _owtag)
 {
 	struct sip_msg* msg = _m;
@@ -843,7 +843,7 @@ int save(struct sip_msg* _m, void* _d, void* _f, str* _s, str* _owtag)
 								forced_binding.s);
 							break;
 						} else {
-							LM_ERR("forced binding to BIG:"
+							LM_ERR("forced binding too BIG:"
 								" %d > MAX_FORCED_BINDING_LEN\n",
 								forced_binding.len);
 							goto done;
@@ -911,11 +911,12 @@ done:
  * @contact_gp:      contact URI to be deleted
  * @next_hop_gp:     IP/domain in front of contacts to be deleted
  * @sip_instance_gp: delete contacts with given "+sip_instance"
+ * @bflag:           delete contacts which the specific branch flag mask
  *
  * @return:      1 on success, negative on failure
  */
 int _remove(struct sip_msg *msg, void *udomain, str *aor_uri, str *match_ct,
-            str *match_next_hop, str *match_sin)
+            str *match_next_hop, str *match_sin, int* bflag)
 {
 	struct hostent delete_nh_he, *he;
 	urecord_t *record;
@@ -939,7 +940,7 @@ int _remove(struct sip_msg *msg, void *udomain, str *aor_uri, str *match_ct,
 	}
 
 	/* without any additional filtering, delete the whole urecord entry */
-	if (!match_ct && !match_next_hop && !match_sin) {
+	if (!match_ct && !match_next_hop && !match_sin && (!bflag ||!*bflag)) {
 		if (ul.delete_urecord((udomain_t *)udomain, &aor_user, record, 0) != 0) {
 			LM_ERR("failed to delete urecord for aor '%.*s'\n",
 			        aor_user.len, aor_user.s);
@@ -1015,6 +1016,11 @@ int _remove(struct sip_msg *msg, void *udomain, str *aor_uri, str *match_ct,
 
 		if (match_sin) {
 			if (str_strcmp(match_sin, &contact->instance))
+				continue;
+		}
+
+		if (bflag && *bflag) {
+			if ((contact->cflags & *(bflag)) == 0)
 				continue;
 		}
 

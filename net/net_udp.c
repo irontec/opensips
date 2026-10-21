@@ -65,7 +65,7 @@ void udp_destroy(void)
 /* tells how many processes the UDP layer will create */
 int udp_count_processes(unsigned int *extra)
 {
-	struct socket_info *si;
+	struct socket_info_full *sif;
 	unsigned int n, e, i;
 
 	if (udp_disabled) {
@@ -75,7 +75,8 @@ int udp_count_processes(unsigned int *extra)
 
 	for( i=0,n=0,e=0 ; i<PROTO_LAST ; i++)
 		if (protos[i].id!=PROTO_NONE && is_udp_based_proto(i))
-			for( si=protos[i].listeners ; si; si=si->next) {
+			for( sif=protos[i].listeners ; sif; sif=sif->next) {
+				const struct socket_info *si = &sif->socket_info;
 				n+=si->workers;
 				if (si->s_profile)
 					if (si->s_profile->max_procs > si->workers)
@@ -180,6 +181,15 @@ int udp_init_listener(struct socket_info *si, int status_flags)
 		goto error;
 	}
 
+	if (si->flags & SI_REUSEPORT) {
+		optval=1;
+		if (setsockopt(si->socket, SOL_SOCKET, SO_REUSEPORT ,
+						(void*)&optval, sizeof(optval)) ==-1){
+			LM_ERR("setsockopt: %s\n", strerror(errno));
+			goto error;
+		}
+	}
+
 	if (si->flags & SI_FRAG) {
 		/* no DF */
 #if defined(IP_MTU_DISCOVER)
@@ -197,16 +207,18 @@ int udp_init_listener(struct socket_info *si, int status_flags)
 	}
 
 	/* tos */
-	optval=tos;
-	if (addr->s.sa_family==AF_INET6){
-		if (setsockopt(si->socket,  IPPROTO_IPV6, IPV6_TCLASS, (void*)&optval, sizeof(optval)) ==-1){
-			LM_WARN("setsockopt tos for IPV6: %s\n", strerror(errno));
-			/* continue since this is not critical */
-		}
-	} else {
-		if (setsockopt(si->socket, IPPROTO_IP, IP_TOS, (void*)&optval, sizeof(optval)) ==-1){
-			LM_WARN("setsockopt tos: %s\n", strerror(errno));
-			/* continue since this is not critical */
+	optval = (si->tos > 0) ? si->tos : tos;
+	if (optval > 0) {
+		if (addr->s.sa_family==AF_INET6){
+			if (setsockopt(si->socket,  IPPROTO_IPV6, IPV6_TCLASS, (void*)&optval, sizeof(optval)) ==-1){
+				LM_WARN("setsockopt tos for IPV6: %s\n", strerror(errno));
+				/* continue since this is not critical */
+			}
+		} else {
+			if (setsockopt(si->socket, IPPROTO_IP, IP_TOS, (void*)&optval, sizeof(optval)) ==-1){
+				LM_WARN("setsockopt tos: %s\n", strerror(errno));
+				/* continue since this is not critical */
+			}
 		}
 	}
 #if defined (__linux__) && defined(UDP_ERRORS)
@@ -265,6 +277,15 @@ int udp_init_listener(struct socket_info *si, int status_flags)
 	if (probe_max_sock_buff(si->socket,0,MAX_RECV_BUFFER_SIZE,
 				BUFFER_INCREMENT)==-1) goto error;
 
+	return 0;
+
+error:
+	return -1;
+}
+
+int udp_bind_listener(struct socket_info *si)
+{
+	union sockaddr_union* addr = &si->su;
 	if (bind(si->socket,  &addr->s, sockaddru_len(*addr))==-1){
 		LM_ERR("bind(%x, %p, %d) on %s: %s\n", si->socket, &addr->s,
 				(unsigned)sockaddru_len(*addr),	si->address_str.s,
@@ -272,12 +293,9 @@ int udp_init_listener(struct socket_info *si, int status_flags)
 		if (addr->s.sa_family==AF_INET6)
 			LM_ERR("might be caused by using a link "
 					" local address, try site local or global\n");
-		goto error;
+		return -1;
 	}
 	return 0;
-
-error:
-	return -1;
 }
 
 
@@ -293,7 +311,7 @@ inline static int handle_io(struct fd_map* fm, int idx,int event_type)
 	switch(fm->type){
 		case F_UDP_READ:
 			n = protos[((struct socket_info*)fm->data)->proto].net.
-				read( fm->data /*si*/, &read);
+				dgram.read( fm->data /*si*/, &read);
 			break;
 		case F_TIMER_JOB:
 			handle_timer_job();
@@ -394,7 +412,8 @@ static int fork_dynamic_udp_process(void *si_filter)
 		/* we first need to init the reactor to be able to add fd
 		 * into it in child_init routines */
 		if (udp_proc_reactor_init(si) < 0 ||
-		init_child(10000/*FIXME*/) < 0) {
+		init_child(10000/*FIXME*/) < 0 ||
+		self_update_routing_script() < 0) {
 			goto error;
 		}
 		report_conditional_status( 1, 0); /*report success*/
@@ -455,7 +474,7 @@ static void udp_process_graceful_terminate(int sender, void *param)
 /* starts all UDP related processes */
 int udp_start_processes(int *chd_rank, int *startup_done)
 {
-	struct socket_info *si;
+	struct socket_info_full *sif;
 	int p_id;
 	int i,p;
 	const struct internal_fork_params ifp_udp_rcv = {
@@ -471,7 +490,8 @@ int udp_start_processes(int *chd_rank, int *startup_done)
 		if ( !is_udp_based_proto(p) )
 			continue;
 
-		for(si=protos[p].listeners; si ; si=si->next ) {
+		for( sif=protos[p].listeners; sif ; sif=sif->next ) {
+			struct socket_info* si = &sif->socket_info;
 
 			if ( auto_scaling_enabled && si->s_profile &&
 			create_process_group( TYPE_UDP, si, si->s_profile,

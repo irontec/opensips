@@ -137,7 +137,7 @@ void evi_remove_expired_subs(event_id_t id) {
 	while (subs) {
 		if (!subs->reply_sock) {
 			LM_ERR("unknown destination\n");
-			continue;
+			goto next_sub;
 		}
 		/* check expire */
 		if (!(subs->reply_sock->flags & EVI_PENDING) &&
@@ -163,6 +163,8 @@ void evi_remove_expired_subs(event_id_t id) {
 			}
 			continue;
 		}
+next_sub:
+		prev = subs;
 		subs = subs->next;
 	}
 	lock_release(events[id].lock);
@@ -171,7 +173,7 @@ void evi_remove_expired_subs(event_id_t id) {
 int evi_raise_event_msg(struct sip_msg *msg, event_id_t id, evi_params_t* params)
 {
 	evi_subs_p subs, prev;
-	evi_async_ctx_t async_status = {NULL, NULL};
+	evi_async_ctx_t evi_async_status = {NULL, NULL};
 	long now;
 	int flags, pflags = 0;
 	int ret = 0;
@@ -238,7 +240,7 @@ int evi_raise_event_msg(struct sip_msg *msg, event_id_t id, evi_params_t* params
 		lock_release(events[id].lock);
 
 		ret += (subs->trans_mod->raise)(msg, &events[id].name,
-					subs->reply_sock, params, &async_status);
+					subs->reply_sock, params, &evi_async_status);
 
 		lock_get(events[id].lock);
 		subs->reply_sock->flags = flags;
@@ -769,6 +771,9 @@ mi_response_t *w_mi_subscribers_list_1(const mi_params_t *params,
 		return init_mi_error(404, MI_SSTR("Event not published"));
 	/* get the event id & before printing the subs list check for any expired subscribers and remove them*/
 	evid = evi_get_id(&event_s);
+	if (evid == -1)
+		return init_mi_error(404, MI_SSTR("Can't get the id"));
+
 	evi_remove_expired_subs(evid);
 
 	return mi_subscribers_list(event, NULL);
@@ -790,6 +795,9 @@ mi_response_t *w_mi_subscribers_list_2(const mi_params_t *params,
 		return init_mi_error(404, MI_SSTR("Event not published"));
 	/* get the event id & before printing the subs list check for any expired subscribers and remove them*/
 	evid = evi_get_id(&event_s);
+	if (evid == -1)
+		return init_mi_error(404, MI_SSTR("Can't get the id"));
+
 	evi_remove_expired_subs(evid);
 
 	if (get_mi_string_param(params, "socket", &subs_s.s, &subs_s.len) < 0)

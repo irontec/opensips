@@ -20,6 +20,8 @@
  *
  */
 
+#include "wolfssl_mem.h"
+
 #include <wolfssl/options.h>
 #include <wolfssl/ssl.h>
 #include <wolfssl/error-ssl.h>
@@ -47,8 +49,8 @@ void tls_dump_cert_info(char* s, WOLFSSL_X509* cert)
 	issuer = wolfSSL_X509_NAME_oneline(wolfSSL_X509_get_issuer_name(cert), 0, 0);
 
 	LM_INFO("%s subject: %s, issuer: %s\n", s ? s : "", subj, issuer);
-	wolfSSL_Free(subj);
-	wolfSSL_Free(issuer);
+	oss_wolfSSL_Free(subj);
+	oss_wolfSSL_Free(issuer);
 }
 
 static void tls_dump_verification_failure(long verification_result)
@@ -198,6 +200,14 @@ int _wolfssl_tls_conn_init(struct tcp_connection* c,
 			errno, strerror(errno));
 		return -1;
 	}
+
+	/* we are no managing TLS 1.2 or 1.3 tickets server side
+	 * so in case a client will want to reconnect after an OpenSIPS
+	 * restart, it will provide a pre-shared ticket and this re-connection
+	 * will just fail, so take the lazy way out and disable tickets 
+	 * https://datatracker.ietf.org/doc/html/rfc8446#section-2.2 */
+	wolfSSL_NoTicketTLSv12(_WOLFSSL_READ_SSL(c->extra_data));
+	wolfSSL_no_ticket_TLSv13(_WOLFSSL_READ_SSL(c->extra_data));
 
 	/* put pointers to the tcp_connection and tls_domain structs
 	 * in the WOLFSSL struct as extra data */

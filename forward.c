@@ -90,12 +90,12 @@
  * be very likely noticeably slower, but it can deal better with
  * multihomed hosts
  */
-struct socket_info* get_out_socket(union sockaddr_union* to, int proto)
+const struct socket_info* get_out_socket(const union sockaddr_union* to, int proto)
 {
 	int temp_sock;
 	socklen_t len;
 	union sockaddr_union from;
-	struct socket_info* si;
+	const struct socket_info* si;
 	struct ip_addr ip, ip_dst;
 
 	if (proto!=PROTO_UDP) {
@@ -142,10 +142,10 @@ error:
  *
  * \note if msg!=null and msg->force_send_socket, the force_send_socket will be used
  */
-struct socket_info* get_send_socket(struct sip_msg *msg,
-										union sockaddr_union* to, int proto)
+const struct socket_info* get_send_socket(struct sip_msg *msg,
+										const union sockaddr_union* to, int proto)
 {
-	struct socket_info* send_sock;
+	const struct socket_info* send_sock;
 
 	/* check if send interface is not forced */
 	if (msg && msg->force_send_socket){
@@ -154,26 +154,20 @@ struct socket_info* get_send_socket(struct sip_msg *msg,
 			msg->force_send_socket=find_si(&(msg->force_send_socket->address),
 											msg->force_send_socket->port_no,
 											proto);
-		}
-		if (msg->force_send_socket && (msg->force_send_socket->socket!=-1))
+		} else
+		if (msg->force_send_socket->address.af!=to->s.sa_family){
+			LM_DBG("force_send_socket of different AF (sock=%d, dst=%d)!\n",
+				msg->force_send_socket->address.af, to->s.sa_family);
+			msg->force_send_socket=NULL;
+		} else
+		if (msg->force_send_socket)
 			return msg->force_send_socket;
-		else{
-			if (msg->force_send_socket && msg->force_send_socket->socket==-1)
-				LM_WARN("not listening on the requested socket, no fork mode?\n");
-			else
-				LM_WARN("protocol/port mismatch\n");
-		}
+		else
+			LM_WARN("protocol/port/af mismatch\n");
 	};
 
-	if (mhomed && proto==PROTO_UDP){
-		send_sock=get_out_socket(to, proto);
-		if ((send_sock==0) || (send_sock->socket!=-1))
-			return send_sock; /* found or error*/
-		else if (send_sock->socket==-1){
-			LM_WARN("not listening on the requested socket, no fork mode?\n");
-			/* continue: try to use some socket */
-		}
-	}
+	if (mhomed && proto==PROTO_UDP)
+		return get_out_socket(to, proto);
 
 	send_sock=0;
 	/* check if we need to change the socket (different address families -
@@ -308,8 +302,8 @@ int forward_request( struct sip_msg* msg, struct proxy_l * p)
 {
 	union sockaddr_union to;
 	str buf;
-	struct socket_info* send_sock;
-	struct socket_info* last_sock;
+	const struct socket_info* send_sock;
+	const struct socket_info* last_sock;
 
 	buf.s=NULL;
 
@@ -473,7 +467,7 @@ int forward_reply(struct sip_msg* msg)
 	struct sr_module *mod;
 	int proto;
 	unsigned int id; /* used only by tcp*/
-	struct socket_info *send_sock;
+	const struct socket_info *send_sock;
 	char* s;
 	int len;
 
@@ -509,7 +503,11 @@ int forward_reply(struct sip_msg* msg)
 		|| (msg->via2==0) || (msg->via2->error!=PARSE_OK))
 	{
 		/* no second via => error */
-		LM_ERR("no 2nd via found in reply\n");
+		LM_ERR("no 2nd via found in [%.*s] [%.*s] reply from [%s] for callid [%.*s]\n",
+			msg->first_line.u.reply.status.len, msg->first_line.u.reply.status.s,
+			msg->cseq->body.len, msg->cseq->body.s,
+			ip_addr2a(&msg->rcv.src_ip),
+			msg->callid->body.len, msg->callid->body.s);
 		goto error;
 	}
 

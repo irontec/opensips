@@ -184,12 +184,13 @@ int parse_msrp_msg( char* buf, int len, struct msrp_msg *msg)
 			case HDR_EXPIRES_T:
 				link_hdr( expires, hf);
 				break;
-			case HDR_OTHER_T:
-				break;
 			case HDR_ERROR_T:
-			default:
 				LM_INFO("bad header field\n");
 				goto err_free_hf;
+			case HDR_OTHER_T:
+			default:
+				/* There can be other headers in the MSRP but we don't need to use them, so ignoring it */
+				break;
 		}
 
 		/* add the header to the list*/
@@ -214,8 +215,9 @@ done:
 		goto error;
 	}
 	/* TO and FROM (in this order) must be the first ones */
-	if (msg->headers->type!=HDR_TO_PATH_T &&
-	msg->headers->next->type!=HDR_FROM_PATH_T) {
+	if (msg->headers==NULL || msg->headers->next==NULL ||
+			msg->headers->type!=HDR_TO_PATH_T ||
+			msg->headers->next->type!=HDR_FROM_PATH_T) {
 		LM_ERR("TO and FROM are not the first headers\n");
 		goto error;
 	}

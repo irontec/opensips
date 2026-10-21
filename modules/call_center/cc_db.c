@@ -267,7 +267,7 @@ int init_cc_db(const str *db_url)
 		return -1;
 	}
 
-	if(db_check_table_version(&cc_dbf, cc_db_handle,
+	if(db_check_table_version(&cc_rt_dbf, cc_db_handle,
 	&cc_calls_table_name, CC_CALLS_TABLE_VERSION) < 0) {
 		LM_ERR("error during CALLS table version check.\n");
 		return -1;
@@ -988,7 +988,7 @@ void cc_db_update_agent_wrapup_end(struct cc_agent* agent)
 	vals[1].nul = 0;
 	vals[1].type = DB_INT;
 	/* translate from internal time to timestamp */
-	vals[1].val.int_val = (int)time(NULL)-get_ticks()+agent->wrapup_end_time;
+	vals[1].val.int_val = (int)(unsigned long)time(NULL)-get_ticks()+agent->wrapup_end_time;
 
 	cc_dbf.use_table( cc_db_handle, &cc_agent_table_name);
 

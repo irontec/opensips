@@ -77,6 +77,7 @@ static int ds_ping_interval = 0;
 int ds_ping_maxfwd = -1;
 int ds_probing_mode = 0;
 int ds_persistent_state = 1;
+static int ds_persistent_state_enable = 0;
 int_list_t *ds_probing_list = NULL;
 
 /* db partiton info */
@@ -94,6 +95,13 @@ typedef struct _ds_db_head
 	str attrs_avp;
 	str script_attrs_avp;
 
+	str ping_from;
+	str ping_method;
+	str persistent_state;
+
+	str ping_sock;
+	struct socket_info *ping_sock_info;
+
 	struct _ds_db_head *next;
 } ds_db_head_t;
 
@@ -103,13 +111,20 @@ ds_db_head_t default_db_head = {
 	{NULL, -1},
 	{NULL, -1},
 
+	{NULL, -1},
+	{NULL, -1},
+	{NULL, -1},
+	{NULL, -1},
+	{NULL, -1},
+	{NULL, -1},
 
 	{NULL, -1},
 	{NULL, -1},
+	{"1", 1},
+
 	{NULL, -1},
-	{NULL, -1},
-	{NULL, -1},
-	{NULL, -1},
+	NULL,
+
 	NULL
 };
 ds_db_head_t *ds_db_heads = NULL;
@@ -153,7 +168,7 @@ static str options_reply_codes_str= {0, 0};
 static int* options_reply_codes = NULL;
 static int options_codes_no;
 static str probing_sock_s;
-struct socket_info *probing_sock = NULL;
+const struct socket_info *probing_sock = NULL;
 
 ds_partition_t *partitions = NULL, *default_partition = NULL;
 
@@ -206,6 +221,7 @@ static int mi_child_init(void);
 
 static int set_partition_arguments(unsigned int type, void * val);
 static int set_probing_list(unsigned int type, void * val);
+static int set_df_persistent_state(unsigned int type, void * val);
 
 static const cmd_export_t cmds[] = {
 	{"ds_select_dst",    (cmd_function)w_ds_select_dst, {
@@ -286,14 +302,14 @@ static const param_export_t params[]={
 	{"weight_col",      STR_PARAM, &ds_dest_weight_col.s},
 	{"priority_col",    STR_PARAM, &ds_dest_prio_col.s},
 	{"attrs_col",       STR_PARAM, &ds_dest_attrs_col.s},
-	{"description_col",       STR_PARAM, &ds_dest_description_col.s},
-	{"probe_mode_col",        STR_PARAM, &ds_dest_probe_mode_col.s},
+	{"description_col", STR_PARAM, &ds_dest_description_col.s},
+	{"probe_mode_col",  STR_PARAM, &ds_dest_probe_mode_col.s},
 	{"dst_avp",         STR_PARAM, &default_db_head.dst_avp.s},
 	{"grp_avp",         STR_PARAM, &default_db_head.grp_avp.s},
 	{"cnt_avp",         STR_PARAM, &default_db_head.cnt_avp.s},
 	{"sock_avp",        STR_PARAM, &default_db_head.sock_avp.s},
 	{"attrs_avp",       STR_PARAM, &default_db_head.attrs_avp.s},
-	{"script_attrs_avp",       STR_PARAM, &default_db_head.script_attrs_avp.s},
+	{"script_attrs_avp",STR_PARAM, &default_db_head.script_attrs_avp.s},
 	{"algo_route",      STR_PARAM, &algo_route_param.s},
 	{"hash_pvar",       STR_PARAM, &hash_pvar_param.s},
 	{"setid_pvar",      STR_PARAM, &ds_setid_pvname.s},
@@ -307,10 +323,12 @@ static const param_export_t params[]={
 	{"ds_probing_mode",       INT_PARAM, &ds_probing_mode},
 	{"options_reply_codes",   STR_PARAM, &options_reply_codes_str.s},
 	{"ds_probing_sock",       STR_PARAM, &probing_sock_s.s},
-	{"ds_probing_list",       STR_PARAM|USE_FUNC_PARAM, (void*)set_probing_list},
+	{"ds_probing_list",       STR_PARAM|USE_FUNC_PARAM,
+										(void*)set_probing_list},
 	{"ds_define_blacklist",   STR_PARAM|USE_FUNC_PARAM, (void*)set_ds_bl},
-	{"persistent_state",      INT_PARAM, &ds_persistent_state},
-	{"fetch_freeswitch_stats", INT_PARAM, &fetch_freeswitch_stats},
+	{"persistent_state",      INT_PARAM|USE_FUNC_PARAM,
+										(void*)set_df_persistent_state},
+	{"fetch_freeswitch_stats",INT_PARAM, &fetch_freeswitch_stats},
 	{"max_freeswitch_weight", INT_PARAM, &max_freeswitch_weight},
 	{"cluster_id",            INT_PARAM, &ds_cluster_id },
 	{"cluster_sharing_tag",   STR_PARAM, &ds_cluster_shtag },
@@ -408,6 +426,10 @@ DEF_GETTER_FUNC(cnt_avp);
 DEF_GETTER_FUNC(sock_avp);
 DEF_GETTER_FUNC(attrs_avp);
 DEF_GETTER_FUNC(script_attrs_avp);
+DEF_GETTER_FUNC(ping_from);
+DEF_GETTER_FUNC(ping_method);
+DEF_GETTER_FUNC(persistent_state);
+DEF_GETTER_FUNC(ping_sock);
 
 static partition_specific_param_t partition_params[] = {
 	{str_init("db_url"), {NULL, 0}, GETTER_FUNC(db_url)},
@@ -418,6 +440,10 @@ static partition_specific_param_t partition_params[] = {
 	PARTITION_SPECIFIC_PARAM (sock_avp, "$avp(ds_sock_failover)"),
 	PARTITION_SPECIFIC_PARAM (attrs_avp, ""),
 	PARTITION_SPECIFIC_PARAM (script_attrs_avp, ""),
+	PARTITION_SPECIFIC_PARAM (ping_from, ""),
+	PARTITION_SPECIFIC_PARAM (ping_method, ""),
+	PARTITION_SPECIFIC_PARAM (persistent_state, "1"),
+	PARTITION_SPECIFIC_PARAM (ping_sock, ""),
 };
 
 static const unsigned int partition_param_count = sizeof (partition_params) /
@@ -468,7 +494,7 @@ static int split_partition_argument(str *arg, str *partition_name)
 	arg->len -= partition_name->len + 1;
 
 	trim(partition_name);
-	for (;arg->s[0] == ' ' && arg->len; ++arg->s, --arg->len);
+	for (;(arg->s[0] == ' ' || arg->s[0] == '\n')  && arg->len; ++arg->s, --arg->len);
 	return 0;
 }
 
@@ -533,6 +559,21 @@ static int set_probing_list(unsigned int type, void *val) {
 	{
 		LM_ERR("Invalid set_probing_list input\n");
 		return -1;
+	}
+
+	return 0;
+}
+
+
+/* coverts the persistent state for the default partiton from int to str */
+static int set_df_persistent_state(unsigned int type, void * val)
+{
+	if ( (int)(long)val == 0) {
+		default_db_head.persistent_state.s = "0";
+		default_db_head.persistent_state.len = 1;
+	} else {
+		default_db_head.persistent_state.s = "1";
+		default_db_head.persistent_state.len = 1;
 	}
 
 	return 0;
@@ -620,6 +661,8 @@ static int set_partition_arguments(unsigned int type, void *val)
 
 static int partition_init(ds_db_head_t *db_head, ds_partition_t *partition)
 {
+	LM_DBG("initializing partition <%.*s>\n",
+		db_head->partition_name.len, db_head->partition_name.s);
 
 	/* Load stuff from DB. URL cannot be null!*/
 	if (db_head->db_url.s == NULL){
@@ -735,6 +778,40 @@ static int partition_init(ds_db_head_t *db_head, ds_partition_t *partition)
 		partition->script_attrs_avp_name = -1;
 		partition->script_attrs_avp_type = 0;
 	}
+
+	if (db_head->ping_from.s && db_head->ping_from.len > 0) {
+		if (pkg_str_dup(&partition->ping_from, &db_head->ping_from) < 0)
+			LM_ERR("cannot duplicate ping_from\n");
+	}
+	if (db_head->ping_method.s && db_head->ping_method.len > 0) {
+		if (pkg_str_dup(&partition->ping_method, &db_head->ping_method) < 0)
+			LM_ERR("cannot duplicate ping_method\n");
+	}
+
+	if (db_head->ping_sock.s && db_head->ping_sock.len > 0) {
+		if (pkg_str_dup(&partition->ping_sock, &db_head->ping_sock) < 0) {
+			LM_ERR("cannot duplicate ping_sock\n");
+			return -1;
+		}
+		partition->ping_sock_info = (struct socket_info *)parse_sock_info(&partition->ping_sock);
+		if (partition->ping_sock_info==NULL) {
+			LM_ERR("socket <%.*s> is not local to opensips (we must listen "
+				"on it\n", partition->ping_sock.len, partition->ping_sock.s);
+			return -1;
+		}
+	}
+
+	if (str_strcmp(&db_head->persistent_state, const_str("0")) == 0 ||
+	str_strcmp(&db_head->persistent_state, const_str("no")) == 0 ||
+	str_strcmp(&db_head->persistent_state, const_str("off")) == 0)
+		partition->persistent_state = 0;
+	else if (str_strcmp(&db_head->persistent_state, const_str("1")) == 0 ||
+	str_strcmp(&db_head->persistent_state, const_str("yes")) == 0 ||
+	str_strcmp(&db_head->persistent_state, const_str("on")) == 0)
+		partition->persistent_state = 1;
+
+	if (partition->persistent_state)
+		ds_persistent_state_enable = 1;
 
 	return 0;
 }
@@ -990,6 +1067,10 @@ next_part:
 
 	}
 
+	LM_DBG("options are fetch_freeswitch_stats=%d, "
+		"ds_persistent_state_enable=%d\n",
+		fetch_freeswitch_stats, ds_persistent_state_enable);
+
 	/* Register the weight-recalculation timer */
 	if (fetch_freeswitch_stats &&
 	    register_timer("ds-update-weights", ds_update_weights, NULL,
@@ -999,7 +1080,7 @@ next_part:
 	}
 
 	/* register timer to flush the state of destination back to DB */
-	if (ds_persistent_state && register_timer("ds-flusher", ds_flusher_routine,
+	if (ds_persistent_state_enable && register_timer("ds-flusher", ds_flusher_routine,
 			NULL, 30 , TIMER_FLAG_SKIP_ON_DELAY)<0) {
 		LM_ERR("failed to register timer for DB flushing!\n");
 		return -1;
@@ -1071,10 +1152,10 @@ static void destroy(void)
 	LM_DBG("destroying module ...\n");
 
 	/* flush the state of the destinations */
-	if (ds_persistent_state) {
+	if (ds_persistent_state_enable) {
 		/* open the DB conns*/
 		for (part_it = partitions; part_it; part_it = part_it->next) {
-			if (part_it->db_url.s)
+			if (part_it->db_url.s && part_it->persistent_state)
 				if (ds_connect_db(part_it) != 0) {
 					LM_ERR("failed to do DB connect\n");
 				}

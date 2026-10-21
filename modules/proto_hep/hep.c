@@ -51,6 +51,8 @@
 #define HEP_PROTO_SIP  0x01
 
 static int control_id = -1;
+atomic_t *hep_failed_retries;
+atomic_t *hep_last_attempt;
 
 struct hep_message_id {
 	char* proto;
@@ -71,6 +73,8 @@ static hid_list_p hid_list=NULL;
 static hid_list_p *hid_dyn_list=NULL;
 static gen_lock_t *hid_dyn_lock=NULL;
 
+extern int hep_max_retries;
+extern int hep_retry_cooldown;
 extern int hep_capture_id;
 extern int payload_compression;
 extern int homer5_on;
@@ -241,13 +245,22 @@ int unpack_hepv3(char *buf, int len, struct hep_desc *h)
 		_len -= _off; \
 	} while (0);
 
+#define CHECK_CHUNK_SIZE(_len, _type) \
+	do { \
+		if ((_len) != sizeof(_type)) { \
+			LM_ERR("invalid HEPv3 chunk %u length %u, expected %zu\n", \
+					chunk_id, (unsigned int)(_len), sizeof(_type)); \
+			goto error; \
+		} \
+	} while (0);
+
 	int rc;
 
 	unsigned char *compressed_payload;
 	unsigned long compress_len;
 
 	struct hepv3 h3;
-	unsigned short tlen;
+	unsigned short tlen, chunk_len;
 	unsigned long decompress_len;
 
 	generic_chunk_t* gen_chunk, *it;
@@ -259,7 +272,17 @@ int unpack_hepv3(char *buf, int len, struct hep_desc *h)
 
 	h->version = 3;
 
+	if (len < sizeof(hep_ctrl_t)) {
+		LM_ERR("invalid HEPv3 packet length %d\n", len);
+		return -1;
+	}
+
 	tlen = ntohs(((hep_ctrl_t*)buf)->length);
+	if (tlen < sizeof(hep_ctrl_t) || tlen > len) {
+		LM_ERR("invalid HEPv3 advertised length %u for packet length %d\n",
+				(unsigned int)tlen, len);
+		return -1;
+	}
 
 	buf += sizeof(hep_ctrl_t);
 	tlen -= sizeof(hep_ctrl_t);
@@ -267,11 +290,26 @@ int unpack_hepv3(char *buf, int len, struct hep_desc *h)
 	memset( &h3, 0, sizeof(struct hepv3));
 
 	while (tlen > 0) {
-		/* we don't look at vendor id; we only need to parse the buffer */
-		chunk_id = ((hep_chunk_t*)buf)->type_id;
+		if (tlen < sizeof(hep_chunk_t)) {
+			LM_ERR("truncated HEPv3 chunk header, remaining length %u\n",
+					(unsigned int)tlen);
+			goto error;
+		}
 
-		switch (ntohs(chunk_id)) {
+		/* we don't look at vendor id; we only need to parse the buffer */
+		chunk_id = ntohs(((hep_chunk_t*)buf)->type_id);
+		chunk_len = ntohs(((hep_chunk_t*)buf)->length);
+
+		if (chunk_len < sizeof(hep_chunk_t) || chunk_len > tlen) {
+			LM_ERR("invalid HEPv3 chunk %u length %u, remaining length %u\n",
+					chunk_id, (unsigned int)chunk_len, (unsigned int)tlen);
+			goto error;
+		}
+
+		switch (chunk_id) {
 		case HEP_PROTO_FAMILY:
+			CHECK_CHUNK_SIZE(chunk_len, hep_chunk_uint8_t);
+
 			/* ip family*/
 			h3.hg.ip_family = *((hep_chunk_uint8_t*)buf);
 
@@ -280,6 +318,8 @@ int unpack_hepv3(char *buf, int len, struct hep_desc *h)
 
 			break;
 		case HEP_PROTO_ID:
+			CHECK_CHUNK_SIZE(chunk_len, hep_chunk_uint8_t);
+
 			/* ip protocol ID*/
 			h3.hg.ip_proto = *((hep_chunk_uint8_t*)buf);
 
@@ -288,6 +328,8 @@ int unpack_hepv3(char *buf, int len, struct hep_desc *h)
 
 			break;
 		case HEP_IPV4_SRC:
+			CHECK_CHUNK_SIZE(chunk_len, hep_chunk_ip4_t);
+
 			/* ipv4 source */
 			h3.addr.ip4_addr.src_ip4 = *((hep_chunk_ip4_t*)buf);
 
@@ -296,6 +338,8 @@ int unpack_hepv3(char *buf, int len, struct hep_desc *h)
 
 			break;
 		case HEP_IPV4_DST:
+			CHECK_CHUNK_SIZE(chunk_len, hep_chunk_ip4_t);
+
 			/* ipv4 dest */
 			h3.addr.ip4_addr.dst_ip4 = *((hep_chunk_ip4_t*)buf);
 
@@ -304,6 +348,8 @@ int unpack_hepv3(char *buf, int len, struct hep_desc *h)
 
 			break;
 		case HEP_IPV6_SRC:
+			CHECK_CHUNK_SIZE(chunk_len, hep_chunk_ip6_t);
+
 			/* ipv6 source */
 			h3.addr.ip6_addr.src_ip6 = *((hep_chunk_ip6_t*)buf);
 
@@ -312,6 +358,8 @@ int unpack_hepv3(char *buf, int len, struct hep_desc *h)
 
 			break;
 		case HEP_IPV6_DST:
+			CHECK_CHUNK_SIZE(chunk_len, hep_chunk_ip6_t);
+
 			/* ipv6 dest */
 			h3.addr.ip6_addr.dst_ip6 = *((hep_chunk_ip6_t*)buf);
 
@@ -320,6 +368,8 @@ int unpack_hepv3(char *buf, int len, struct hep_desc *h)
 
 			break;
 		case HEP_SRC_PORT:
+			CHECK_CHUNK_SIZE(chunk_len, hep_chunk_uint16_t);
+
 			/* source port */
 			h3.hg.src_port = *((hep_chunk_uint16_t*)buf);
 
@@ -330,6 +380,8 @@ int unpack_hepv3(char *buf, int len, struct hep_desc *h)
 
 			break;
 		case HEP_DST_PORT:
+			CHECK_CHUNK_SIZE(chunk_len, hep_chunk_uint16_t);
+
 			/* dest port */
 			h3.hg.dst_port = *((hep_chunk_uint16_t*)buf);
 
@@ -340,6 +392,8 @@ int unpack_hepv3(char *buf, int len, struct hep_desc *h)
 
 			break;
 		case HEP_TIMESTAMP:
+			CHECK_CHUNK_SIZE(chunk_len, hep_chunk_uint32_t);
+
 			/* timestamp */
 			h3.hg.time_sec = *((hep_chunk_uint32_t*)buf);
 
@@ -350,6 +404,8 @@ int unpack_hepv3(char *buf, int len, struct hep_desc *h)
 
 			break;
 		case HEP_TIMESTAMP_US:
+			CHECK_CHUNK_SIZE(chunk_len, hep_chunk_uint32_t);
+
 			/* timestamp microsecs offset */
 			h3.hg.time_usec = *((hep_chunk_uint32_t*)buf);
 
@@ -360,6 +416,8 @@ int unpack_hepv3(char *buf, int len, struct hep_desc *h)
 
 			break;
 		case HEP_PROTO_TYPE:
+			CHECK_CHUNK_SIZE(chunk_len, hep_chunk_uint8_t);
+
 			/* proto type */
 			h3.hg.proto_t = *((hep_chunk_uint8_t*)buf);
 
@@ -368,6 +426,8 @@ int unpack_hepv3(char *buf, int len, struct hep_desc *h)
 
 			break;
 		case HEP_AGENT_ID:
+			CHECK_CHUNK_SIZE(chunk_len, hep_chunk_uint32_t);
+
 			/* capture agent id */
 			h3.hg.capt_id = *((hep_chunk_uint32_t*)buf);
 
@@ -379,6 +439,10 @@ int unpack_hepv3(char *buf, int len, struct hep_desc *h)
 			break;
 		case HEP_PAYLOAD:
 			/* captured packet payload */
+			if (h3.payload_chunk_free) {
+				pkg_free(h3.payload_chunk.data);
+				h3.payload_chunk_free = 0;
+			}
 			h3.payload_chunk = *((hep_chunk_payload_t*)buf);
 			h3.payload_chunk.data = (char *)buf + sizeof(hep_chunk_t);
 
@@ -389,6 +453,10 @@ int unpack_hepv3(char *buf, int len, struct hep_desc *h)
 		case HEP_COMPRESSED_PAYLOAD:
 			/* captured compressed payload(GZIP/inflate)*/
 
+			if (h3.payload_chunk_free) {
+				pkg_free(h3.payload_chunk.data);
+				h3.payload_chunk_free = 0;
+			}
 			h3.payload_chunk = *((hep_chunk_payload_t*)buf);
 			h3.payload_chunk.data = (char *)buf + sizeof(hep_chunk_t);
 
@@ -414,6 +482,8 @@ int unpack_hepv3(char *buf, int len, struct hep_desc *h)
 				/* update the length based on the new length */
 				h3.payload_chunk.chunk.length += (decompress_len - compress_len);
 				h3.payload_chunk.data = decompressed_payload.s;
+				h3.payload_chunk_free = 1;
+				decompressed_payload.s = NULL;
 			}/* else we're just a proxy; leaving everything as is */
 
 			break;
@@ -422,7 +492,7 @@ int unpack_hepv3(char *buf, int len, struct hep_desc *h)
 			 * locking will be required */
 			if ((gen_chunk = shm_malloc(sizeof(generic_chunk_t)))==NULL) {
 				LM_ERR("no more pkg mem!\n");
-				return -1;
+				goto error;
 			}
 
 			memset(gen_chunk, 0, sizeof(generic_chunk_t));
@@ -435,7 +505,8 @@ int unpack_hepv3(char *buf, int len, struct hep_desc *h)
 
 			if (gen_chunk->data == NULL) {
 				LM_ERR("no more shared memory!\n");
-				return -1;
+				shm_free(gen_chunk);
+				goto error;
 			}
 
 			memcpy(gen_chunk->data, (char *)buf + sizeof(hep_chunk_t),
@@ -455,10 +526,31 @@ int unpack_hepv3(char *buf, int len, struct hep_desc *h)
 		}
 	}
 
+	if (!h3.payload_chunk.data ||
+			h3.payload_chunk.chunk.length < sizeof(hep_chunk_t)) {
+		LM_ERR("HEPv3 packet missing payload chunk\n");
+		goto error;
+	}
+
 safe_exit:
 	h->u.hepv3 = h3;
 
 	return 0;
+
+error:
+	if (h3.payload_chunk_free)
+		pkg_free(h3.payload_chunk.data);
+
+	while (h3.chunk_list) {
+		it = h3.chunk_list;
+		h3.chunk_list = it->next;
+		shm_free(it->data);
+		shm_free(it);
+	}
+	if (decompressed_payload.s)
+		pkg_free(decompressed_payload.s);
+#undef CHECK_CHUNK_SIZE
+	return -1;
 }
 
 static int
@@ -654,7 +746,7 @@ static hid_list_p get_hep_id_by_name(str* name, int lock, int ref)
 
 /*
  * New hep uri. Hep uri format
- * ip[:proto]; version=<1/2/3>; transport=<tcp/udp>;"
+ * ip[:proto]; version=<1/2/3>; transport=<tcp/udp/tls>;"
  * ';' can miss; version and transport are interchangeable;
  *
  */
@@ -667,6 +759,10 @@ hid_list_p new_hep_id(str *name, str *uri_s)
 	#define IS_TCP(__url__) ((__url__.len == 3/*O_o*/ \
 				&& (__url__.s[0]|0x20) == 't' && (__url__.s[1]|0x20) == 'c' \
 					&& (__url__.s[2]|0x20) == 'p'))
+
+	#define IS_TLS(__url__) ((__url__.len == 3/*O_o*/ \
+				&& (__url__.s[0]|0x20) == 't' && (__url__.s[1]|0x20) == 'l' \
+					&& (__url__.s[2]|0x20) == 's'))
 
 	hid_list_p el;
 	unsigned int port;
@@ -720,6 +816,8 @@ hid_list_p new_hep_id(str *name, str *uri_s)
 			trans = PROTO_HEP_UDP;
 		} else if (IS_TCP(transport)) {
 			trans = PROTO_HEP_TCP;
+		} else if (IS_TLS(transport)) {
+			trans = PROTO_HEP_TLS;
 		} else {
 			LM_ERR("Bad transport <%.*s>!\n", transport.len, transport.s);
 			return NULL;
@@ -729,7 +827,12 @@ hid_list_p new_hep_id(str *name, str *uri_s)
 	}
 
 	if (trans == PROTO_HEP_TCP && ver < 3) {
-		LM_WARN("TCP not available for HEP version < 3! Falling back to udp!\n");
+		LM_WARN("TCP not available for HEP version < 3! Falling back to UDP!\n");
+		trans = PROTO_HEP_UDP;
+	}
+
+	if (trans == PROTO_HEP_TLS && ver < 3) {
+		LM_WARN("TLS not available for HEP version < 3! Falling back to UDP!\n");
 		trans = PROTO_HEP_UDP;
 	}
 
@@ -763,18 +866,19 @@ hid_list_p new_hep_id(str *name, str *uri_s)
 	LM_DBG("Parsed hep id {%.*s} with ip {%.*s} port {%d}"
 			" transport {%s} hep version {%d}!\n",
 			el->name.len, el->name.s, el->ip.len, el->ip.s,
-			el->port_no, el->transport == PROTO_HEP_TCP ? "tcp" : "udp",
+			el->port_no, el->transport == PROTO_HEP_TCP ? "tcp" : (el->transport == PROTO_HEP_TLS ? "tls" : "udp"),
 			el->version);
 
 	return el;
 
+#undef IS_TLS
 #undef IS_TCP
 #undef IS_UDP
 }
 
 /*
  * parse hep id. Hep id format
- * [<name>]ip[:proto]; version=<1/2/3>; transport=<tcp/udp>;"
+ * [<name>]ip[:proto]; version=<1/2/3>; transport=<tcp/udp/tls>;"
  * ';' can miss; version and transport are interchangeable;
  *
  */
@@ -854,7 +958,7 @@ int parse_hep_id(unsigned int type, void *val)
 /**
  *
  */
-static trace_message create_hep12_message(union sockaddr_union* from_su, union sockaddr_union* to_su,
+static trace_message create_hep12_message(const union sockaddr_union* from_su, const union sockaddr_union* to_su,
 		int net_proto, str* payload, int version)
 {
 	unsigned int totlen=0;
@@ -937,7 +1041,7 @@ static trace_message create_hep12_message(union sockaddr_union* from_su, union s
 }
 
 
-static trace_message create_hep3_message(union sockaddr_union* from_su, union sockaddr_union* to_su,
+static trace_message create_hep3_message(const union sockaddr_union* from_su, const union sockaddr_union* to_su,
 		int net_proto, str* payload, int proto)
 {
 	int rc;
@@ -1429,7 +1533,7 @@ out_err:
 /*
  * create message function
  * */
-trace_message create_hep_message(union sockaddr_union* from_su, union sockaddr_union* to_su,
+trace_message create_hep_message(const union sockaddr_union* from_su, const union sockaddr_union* to_su,
 		int net_proto, str* payload, int pld_proto, trace_dest dest)
 {
 	hid_list_p hep_dest = (hid_list_p) dest;
@@ -1665,8 +1769,22 @@ int add_hep_payload(trace_message message, char* pld_name, str* pld_value)
 	return 0;
 }
 
+static void free_hep_send_resources(struct proxy_l *p, union sockaddr_union *to, char *buf) {
+	if (p) {
+		free_proxy(p);
+		pkg_free(p);
+	}
+	if (to) {
+		pkg_free(to);
+	}
+	if (buf) {
+		pkg_free(buf);
+	}
+}
 
-int send_hep_message(trace_message message, trace_dest dest, struct socket_info* send_sock)
+
+
+int send_hep_message(trace_message message, trace_dest dest, const struct socket_info* send_sock)
 {
 	int len, ret=-1;
 	char* buf=0;
@@ -1698,35 +1816,46 @@ int send_hep_message(trace_message message, trace_dest dest, struct socket_info*
 	/* */
 	p=mk_proxy( &hep_dest->ip, hep_dest->port_no ? hep_dest->port_no : HEP_PORT, hep_dest->transport, 0);
 	if (p == NULL) {
-		pkg_free(buf);
 		LM_ERR("bad hep host name!\n");
+		free_hep_send_resources(NULL, NULL, buf);
 		goto end;
 	}
 
 	to=(union sockaddr_union *)pkg_malloc(sizeof(union sockaddr_union));
 	if (to == 0) {
 		LM_ERR("no more pkg mem!\n");
-		pkg_free(buf);
-		free_proxy(p);
-		pkg_free(p);
+		free_hep_send_resources(p, NULL, buf);
 		goto end;
 	}
 
 	hostent2su(to, &p->host, p->addr_idx, p->port?p->port:HEP_PORT);
 
+	time_t now = time(NULL);
+
+	// Check cooldown logic
+	if (atomic_load(hep_failed_retries) >= (long)hep_max_retries && (long)(now - atomic_load(hep_last_attempt)) < (long)hep_retry_cooldown) {
+		LM_ERR("HEP send suppressed: too many failures (%ld), in cooldown (%ld seconds left)\n", atomic_load(hep_failed_retries), hep_retry_cooldown - (now - atomic_load(hep_last_attempt)));
+		free_hep_send_resources(p, to, buf);
+		goto end;
+	}
+
+	atomic_store(hep_last_attempt, now);
+
 	do {
 		if (msg_send(send_sock, hep_dest->transport, to, 0, buf, len, NULL) < 0) {
-			LM_ERR("Cannot send hep message!\n");
+			LM_ERR("Cannot send HEP message!\n");
+			atomic_fetch_add(hep_failed_retries, 1);
 			continue;
 		}
-		ret=0;
-		break;
-	} while ( get_next_su( p, to, 0)==0);
 
-	free_proxy(p);
-	pkg_free(p);
-	pkg_free(to);
-	pkg_free(buf);
+		// Success: reset retry state
+		atomic_store(hep_failed_retries, 0);
+		ret = 0;
+		break;
+	} while (get_next_su(p, to, 0) == 0);
+
+
+	free_hep_send_resources(p, to, buf);
 
 end:
 	return ret;

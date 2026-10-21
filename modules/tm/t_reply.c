@@ -68,6 +68,7 @@
 #include "../../dprint.h"
 #include "../../config.h"
 #include "../../parser/parser_f.h"
+#include "../../parser/msg_parser.h"
 #include "../../ut.h"
 #include "../../timer.h"
 #include "../../error.h"
@@ -119,7 +120,7 @@ static struct script_route_ref *goto_on_reply = NULL;
 /* currently processed branch */
 extern int _tm_branch_index;
 
-
+static struct sip_msg dummy_msg;
 
 /* returns the picked branch */
 int t_get_picked_branch(void)
@@ -138,6 +139,56 @@ int t_get_picked_branch(void)
 */
 
 
+/* Safely replace a script-route reference that may live inside a shared
+   transaction cell (t->on_negative, t->on_reply, t->on_branch, ...).
+  
+   The previous code did an unlocked read-modify-write directly on the shared
+   field:
+       if (*holder) shm_free(*holder);
+       *holder = dup_ref_script_route_in_shm(ref, 0);
+   When a request route runs against an ALREADY-EXISTING transaction -- a
+   retransmitted ACK matched via t_check_trans() and processed by multiple
+   UDP workers -- two processes read the same pointer and both
+   shm_free() it. The second free aborts inside the shm allocator while holding
+   the global shm lock, blocking the whole server. Every process eventually
+   spins on the orphaned lock.
+ 
+   Here the pointer is swapped atomically under the cell's reply lock, and the
+   (now private) swapped-out pointer is freed afterwards. The shm alloc/free are
+   kept OUTSIDE LOCK_REPLIES so the reply lock is never nested around the global
+   shm lock.
+ 
+   The lock is taken only in REQUEST_ROUTE, the only context that can reach a
+   shared cell field concurrently without already holding the reply lock.
+   FAILURE_ROUTE and -- with onreply_avp_mode -- ONREPLY_ROUTE already execute
+   under LOCK_REPLIES (see run_failure_handlers() / reply_received()), and those
+   routes call t_on_reply()/t_on_failure() to re-arm handlers;
+   taking the non-recursive reply lock again there would self-deadlock. The
+   pre-transaction static holder and BRANCH_ROUTE are single-owner and need no
+   lock.
+*/
+
+
+void tm_set_script_route_ref(struct cell *t, struct script_route_ref **holder,
+		struct script_route_ref *ref)
+{
+	struct script_route_ref *old, *new_ref;
+	int locked = (t && t!=T_UNDEFINED && route_type==REQUEST_ROUTE);
+
+	/* allocate outside the lock (dup calls shm_malloc) */
+	new_ref = ref ? dup_ref_script_route_in_shm( ref, 0) : NULL;
+
+	if (locked) LOCK_REPLIES(t);
+	old = *holder;
+	*holder = new_ref;
+	if (locked) UNLOCK_REPLIES(t);
+
+	/* the swapped-out pointer is now private to us -> free outside the lock */
+	if (old)
+		shm_free( old );
+}
+
+
 void t_on_negative( struct script_route_ref *ref )
 {
 	struct cell *t = get_t();
@@ -148,11 +199,7 @@ void t_on_negative( struct script_route_ref *ref )
 	 * created; if not -> use the static variable */
 	holder = (!t || t==T_UNDEFINED ) ? &goto_on_negative : &t->on_negative ;
 
-	/* if something already set, free it first */
-	if (*holder)
-		shm_free( *holder );
-
-	*holder = ref ? dup_ref_script_route_in_shm( ref, 0) : NULL;
+	tm_set_script_route_ref( t, holder, ref );
 }
 
 
@@ -169,11 +216,7 @@ void t_on_reply( struct script_route_ref *ref  )
 		( route_type==BRANCH_ROUTE ?
 			&t->uac[_tm_branch_index].on_reply : &t->on_reply );
 
-	/* if something already set, free it first */
-	if (*holder)
-		shm_free( *holder );
-
-	*holder = ref ? dup_ref_script_route_in_shm( ref, 0) : NULL;
+	tm_set_script_route_ref( t, holder, ref );
 }
 
 
@@ -440,6 +483,22 @@ static int _reply_light( struct cell *trans, char* buf, unsigned int len,
 	if(trans->uas.request && trans->uas.request->flags&tcp_no_new_conn_rplflag)
 		tcp_no_new_conn = 1;
 
+	if(ref_script_route_is_valid(tm_local_reply_route)) {
+		LM_DBG("Found Local-Reply Route...\n");
+		memset(&dummy_msg, 0, sizeof(struct sip_msg));
+		dummy_msg.buf = buf;
+		dummy_msg.len = len;
+
+		if (parse_msg(buf, len, &dummy_msg) == 0) {
+			LM_DBG("Parsed Message, executing Local-Reply Route "
+				"with Message...\n");
+			run_top_route(sroutes->request[tm_local_reply_route->idx],
+				&dummy_msg);
+		}
+		free_sip_msg(&dummy_msg);
+	}
+
+
 	if ( SEND_PR_BUFFER( rb, buf, len )==0 ) {
 		LM_DBG("reply sent out. buf=%p: %.9s..., "
 			"shmem=%p: %.9s\n", buf, buf, rb->buffer.s, rb->buffer.s );
@@ -541,7 +600,7 @@ static inline void faked_env( struct cell *t,struct sip_msg *msg)
 {
 	static struct cell *backup_t;
 	static struct usr_avp **backup_list;
-	static struct socket_info* backup_si;
+	static const struct socket_info* backup_si;
 	static int backup_route_type;
 
 	if (msg) {
@@ -1510,6 +1569,74 @@ error:
 	return RPS_ERROR;
 }
 
+void process_reply_and_timer(struct cell *t,int branch,int msg_status, 
+	struct sip_msg *p_msg,int last_uac_status, struct ua_client *uac)
+{
+	int reply_status;
+	branch_bm_t cancel_bitmap=0;
+	utime_t timer;
+
+	/* we fire a cancel on spot if (a) branch is marked "to be canceled" or (b)
+	 * the whole transaction was canceled (received cancel) and no cancel sent
+	 * yet on this branch; and of course, only if a provisional reply :) */
+	if (t->uac[branch].flags&T_UAC_TO_CANCEL_FLAG ||
+	((t->flags&T_WAS_CANCELLED_FLAG) && !t->uac[branch].local_cancel.buffer.s)) {
+		if ( msg_status < 200 )
+			/* reply for an UAC with a pending cancel -> do cancel now */
+			cancel_branch(t, branch);
+		/* reset flag */
+		t->uac[branch].flags &= ~(T_UAC_TO_CANCEL_FLAG);
+	}
+
+	if (is_local(t)) {
+		reply_status = local_reply(t,p_msg, branch,msg_status,&cancel_bitmap);
+		if (reply_status == RPS_COMPLETED) {
+			cleanup_uac_timers(t);
+			if (is_invite(t)) cancel_uacs(t, cancel_bitmap);
+			/* There is no need to call set_final_timer because we know
+			 * that the transaction is local */
+			put_on_wait(t);
+		}
+	} else {
+		reply_status = relay_reply(t,p_msg,branch,msg_status,&cancel_bitmap);
+		/* clean-up the transaction when transaction completed */
+		if (reply_status == RPS_COMPLETED) {
+			/* no more UAC FR/RETR (if I received a 2xx, there may
+			 * be still pending branches ...
+			 */
+			cleanup_uac_timers(t);
+			if (is_invite(t)) cancel_uacs(t, cancel_bitmap);
+			/* FR for negative INVITES, WAIT anything else */
+			/* set_final_timer(t); */
+		}
+	}
+
+	if (reply_status!=RPS_PROVISIONAL)
+		return;
+
+	/* update FR/RETR timers on provisional replies */
+	if (msg_status < 200 && (restart_fr_on_each_reply ||
+	((last_uac_status<msg_status) &&
+	((msg_status >= 180) || (last_uac_status == 0)))
+	) ) { /* provisional now */
+		if (is_invite(t)) {
+			/* invite: change FR to longer FR_INV, do not
+			 * attempt to restart retransmission any more
+			 */
+			timer = is_timeout_set(t->fr_inv_timeout) ?
+				t->fr_inv_timeout :
+				timer_id2timeout[FR_INV_TIMER_LIST];
+
+			LM_DBG("FR_INV_TIMER = %lld\n", timer);
+			set_timer(&uac->request.fr_timer, FR_INV_TIMER_LIST, &timer);
+		} else {
+			/* non-invite: restart retransmissions (slow now) */
+			uac->request.retr_list = RT_T2;
+			set_timer(&uac->request.retr_timer, RT_T2, 0);
+		}
+	} /* provisional replies */
+
+}
 
 /*  This function is called whenever a reply for our module is received;
   * we need to register  this function on module initialization;
@@ -1521,10 +1648,7 @@ int reply_received( struct sip_msg  *p_msg )
 	int msg_status;
 	int last_uac_status;
 	int branch;
-	int reply_status;
-	utime_t timer;
 	/* has the transaction completed now and we need to clean-up? */
-	branch_bm_t cancel_bitmap;
 	struct ua_client *uac;
 	struct cell *t;
 	struct usr_avp **backup_list;
@@ -1544,7 +1668,6 @@ int reply_received( struct sip_msg  *p_msg )
 	t = get_t();
 	if ((t == 0) || (t == T_UNDEFINED)) goto not_found;
 
-	cancel_bitmap=0;
 	msg_status=p_msg->REPLY_STATUS;
 
 	uac=&t->uac[branch];
@@ -1635,6 +1758,9 @@ int reply_received( struct sip_msg  *p_msg )
 			LM_DBG("dropping provisional reply %d\n", msg_status);
 			goto done;
 		}
+
+		async_status = ASYNC_NO_IO;
+
 		if ( ref_script_route_check_and_update(t->on_reply) &&
 		(run_top_route(sroutes->onreply[t->on_reply->idx],p_msg)
 		&ACT_FL_DROP) && (msg_status<200) ) {
@@ -1654,6 +1780,19 @@ int reply_received( struct sip_msg  *p_msg )
 		if (onreply_avp_mode)
 			/* restore original avp list */
 			set_avp_list( backup_list );
+
+		if (async_status > 0) {
+			/* async was started in the onreply route, no need to do anything more here */
+			/* mark that the UAC received replies */
+			uac->flags |= T_UAC_HAS_RECV_REPLY;
+
+			if (onreply_avp_mode) {
+				UNLOCK_REPLIES( t );
+				set_avp_list( backup_list );
+			}
+			/* we exit and do not unref T, keep the ref for as long the async is in progress */
+			goto done_no_unref;
+		}
 	}
 
 	if (!onreply_avp_mode || !has_reply_route)
@@ -1663,65 +1802,7 @@ int reply_received( struct sip_msg  *p_msg )
 	/* mark that the UAC received replies */
 	uac->flags |= T_UAC_HAS_RECV_REPLY;
 
-	/* we fire a cancel on spot if (a) branch is marked "to be canceled" or (b)
-	 * the whole transaction was canceled (received cancel) and no cancel sent
-	 * yet on this branch; and of course, only if a provisional reply :) */
-	if (t->uac[branch].flags&T_UAC_TO_CANCEL_FLAG ||
-	((t->flags&T_WAS_CANCELLED_FLAG) && !t->uac[branch].local_cancel.buffer.s)) {
-		if ( msg_status < 200 )
-			/* reply for an UAC with a pending cancel -> do cancel now */
-			cancel_branch(t, branch);
-		/* reset flag */
-		t->uac[branch].flags &= ~(T_UAC_TO_CANCEL_FLAG);
-	}
-
-	if (is_local(t)) {
-		reply_status = local_reply(t,p_msg, branch,msg_status,&cancel_bitmap);
-		if (reply_status == RPS_COMPLETED) {
-			cleanup_uac_timers(t);
-			if (is_invite(t)) cancel_uacs(t, cancel_bitmap);
-			/* There is no need to call set_final_timer because we know
-			 * that the transaction is local */
-			put_on_wait(t);
-		}
-	} else {
-		reply_status = relay_reply(t,p_msg,branch,msg_status,&cancel_bitmap);
-		/* clean-up the transaction when transaction completed */
-		if (reply_status == RPS_COMPLETED) {
-			/* no more UAC FR/RETR (if I received a 2xx, there may
-			 * be still pending branches ...
-			 */
-			cleanup_uac_timers(t);
-			if (is_invite(t)) cancel_uacs(t, cancel_bitmap);
-			/* FR for negative INVITES, WAIT anything else */
-			/* set_final_timer(t); */
-		}
-	}
-
-	if (reply_status!=RPS_PROVISIONAL)
-		goto done;
-
-	/* update FR/RETR timers on provisional replies */
-	if (msg_status < 200 && (restart_fr_on_each_reply ||
-	((last_uac_status<msg_status) &&
-	((msg_status >= 180) || (last_uac_status == 0)))
-	) ) { /* provisional now */
-		if (is_invite(t)) {
-			/* invite: change FR to longer FR_INV, do not
-			 * attempt to restart retransmission any more
-			 */
-			timer = is_timeout_set(t->fr_inv_timeout) ?
-				t->fr_inv_timeout :
-				timer_id2timeout[FR_INV_TIMER_LIST];
-
-			LM_DBG("FR_INV_TIMER = %lld\n", timer);
-			set_timer(&uac->request.fr_timer, FR_INV_TIMER_LIST, &timer);
-		} else {
-			/* non-invite: restart retransmissions (slow now) */
-			uac->request.retr_list = RT_T2;
-			set_timer(&uac->request.retr_timer, RT_T2, 0);
-		}
-	} /* provisional replies */
+	process_reply_and_timer(t,branch,msg_status,p_msg,last_uac_status,uac);
 
 done:
 	/* we are done with the transaction, so unref it - the reference
@@ -1732,6 +1813,7 @@ done:
 	 * simply do nothing; that will make the other party to
 	 * retransmit; hopefuly, we'll then be better off
 	 */
+done_no_unref:
 	_tm_branch_index = 0;
 	return 0;
 not_found:

@@ -30,35 +30,35 @@ endif
 
 # search 'so' path if it non standard (possible liboclntsh locations on linux)
 ifeq ($(ORAPATH),)
-    ORAPATH=$(shell [ -f $(LOCALBASE)/lib64/oracle$(ORAVERDIR)/libocci.so ] && \
+    ORAPATH := $(shell [ -f $(LOCALBASE)/lib64/oracle$(ORAVERDIR)/libocci.so ] && \
 	    echo $(LOCALBASE)/lib64/oracle$(ORAVERDIR) )
 endif
 ifeq ($(ORAPATH),)
-    ORAPATH=$(shell [ -f $(SYSBASE)/lib64/oracle$(ORAVERDIR)/libocci.so ] && \
+    ORAPATH := $(shell [ -f $(SYSBASE)/lib64/oracle$(ORAVERDIR)/libocci.so ] && \
 	    echo $(SYSBASE)/lib64/oracle$(ORAVERDIR) )
 endif
 ifeq ($(ORAPATH),)
-    ORAPATH=$(shell [ -f $(LOCALBASE)/lib64/oracle$(ORAVERDIR)/lib/libocci.so ] && \
+    ORAPATH := $(shell [ -f $(LOCALBASE)/lib64/oracle$(ORAVERDIR)/lib/libocci.so ] && \
 	    echo $(LOCALBASE)/lib64/oracle$(ORAVERDIR)/lib )
 endif
 ifeq ($(ORAPATH),)
-    ORAPATH=$(shell [ -f $(SYSBASE)/lib64/oracle$(ORAVERDIR)/lib/libocci.so ] && \
+    ORAPATH := $(shell [ -f $(SYSBASE)/lib64/oracle$(ORAVERDIR)/lib/libocci.so ] && \
 	    echo $(SYSBASE)/lib64/oracle$(ORAVERDIR)/lib )
 endif
 ifeq ($(ORAPATH),)
-    ORAPATH=$(shell [ -f $(LOCALBASE)/lib/oracle$(ORAVERDIR)/libocci.so ] && \
+    ORAPATH := $(shell [ -f $(LOCALBASE)/lib/oracle$(ORAVERDIR)/libocci.so ] && \
 	    echo $(LOCALBASE)/lib/oracle$(ORAVERDIR) )
 endif
 ifeq ($(ORAPATH),)
-    ORAPATH=$(shell [ -f $(SYSBASE)/lib/oracle$(ORAVERDIR)/libocci.so ] && \
+    ORAPATH := $(shell [ -f $(SYSBASE)/lib/oracle$(ORAVERDIR)/libocci.so ] && \
 	    echo $(SYSBASE)/lib/oracle$(ORAVERDIR) )
 endif
 ifeq ($(ORAPATH),)
-    ORAPATH=$(shell [ -f $(LOCALBASE)/lib/oracle$(ORAVERDIR)/lib/libocci.so ] && \
+    ORAPATH := $(shell [ -f $(LOCALBASE)/lib/oracle$(ORAVERDIR)/lib/libocci.so ] && \
 	    echo $(LOCALBASE)/lib/oracle$(ORAVERDIR)/lib )
 endif
 ifeq ($(ORAPATH),)
-    ORAPATH=$(shell [ -f $(SYSBASE)/lib/oracle$(ORAVERDIR)/lib/libocci.so ] && \
+    ORAPATH := $(shell [ -f $(SYSBASE)/lib/oracle$(ORAVERDIR)/lib/libocci.so ] && \
 	    echo $(SYSBASE)/lib/oracle$(ORAVERDIR)/lib )
 endif
 
@@ -82,6 +82,9 @@ $(UTILS_DIR)/db_oracle/opensips_orasel:
 	make -C $(UTILS_DIR)/db_oracle
 
 install_module_custom: $(bin_prefix)/$(bin_dir) $(UTILS_DIR)/db_oracle/opensips_orasel
+	$(INSTALL_BIN) $(UTILS_DIR)/db_oracle/opensips_orasel $(bin_prefix)/$(bin_dir) ; \
+
+install_module_schema:
 	mkdir -p $(data_prefix)/$(data_dir)/oracle ; \
 	for FILE in $(wildcard $(SCRIPTS_DIR)/oracle/*) ; do \
 		if [ -f $$FILE ] ; then \
@@ -109,4 +112,3 @@ install_module_custom: $(bin_prefix)/$(bin_dir) $(UTILS_DIR)/db_oracle/opensips_
 			$(data_prefix)/$(data_dir)/oracle/admin/`basename "$$FILE"` ; \
 		fi ;\
 	done ; \
-	$(INSTALL_BIN) $(UTILS_DIR)/db_oracle/opensips_orasel $(bin_prefix)/$(bin_dir) ; \

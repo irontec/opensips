@@ -235,10 +235,13 @@ static inline void free_dlg_dlg(struct dlg_cell *dlg)
 
 #ifdef DBG_DIALOG
 	sh_log(dlg->hist, DLG_DESTROY, "ref %d", dlg->ref);
-	sh_unref(dlg->hist);
-	dlg->hist = NULL;
+	if (dlg->hist) {
+		sh_unref(dlg->hist);
+		dlg->hist = NULL;
+	}
 #endif
 
+	lock_destroy_rw(dlg->vals_lock);
 	shm_free(dlg);
 }
 
@@ -321,17 +324,23 @@ struct dlg_cell* build_new_dlg( str *callid, str *from_uri, str *to_uri,
 
 	memset(dlg, 0, len);
 
+	dlg->vals_lock = lock_init_rw();
+	if (!dlg->vals_lock) {
+		LM_ERR("oom\n");
+		shm_free(dlg);
+		return NULL;
+	}
+
 #if defined(DBG_DIALOG)
 	dlg->hist = sh_push(dlg, dlg_hist);
 	if (!dlg->hist) {
 		LM_ERR("oom\n");
-		shm_free(dlg);
+		free_dlg_dlg(dlg);
 		return NULL;
 	}
 #endif
 
 	dlg->state = DLG_STATE_UNCONFIRMED;
-
 	dlg->h_entry = dlg_hash( callid);
 
 	LM_DBG("new dialog %p (c=%.*s,f=%.*s,t=%.*s,ft=%.*s) on hash %u\n",
@@ -368,6 +377,7 @@ int dlg_clone_callee_leg(struct dlg_cell *dlg, int cloned_leg_idx)
 		return -1;
 	src_leg = &dlg->legs[cloned_leg_idx];
 	leg = &dlg->legs[dlg->legs_no[DLG_LEGS_USED]];
+	leg->branch_id = src_leg->branch_id;
 
 	if (shm_str_dup(&leg->adv_contact, &src_leg->adv_contact) != 0) {
 		LM_ERR("oom contact\n");
@@ -384,7 +394,7 @@ int dlg_clone_callee_leg(struct dlg_cell *dlg, int cloned_leg_idx)
 }
 
 
-static inline int translate_contact_ipport( str *ct, struct socket_info *sock,
+static inline int translate_contact_ipport( str *ct, const struct socket_info *sock,
 																	str *dst)
 {
 	struct hdr_field ct_hdr;
@@ -392,7 +402,7 @@ static inline int translate_contact_ipport( str *ct, struct socket_info *sock,
 	contact_t *c;
 	struct sip_uri puri;
 	str hostport;
-	str *send_address_str, *send_port_str;
+	const str *send_address_str, *send_port_str;
 	char *p;
 
 	/* rely on the fact that the replicated hdr is well formated, so 
@@ -478,7 +488,7 @@ error:
    be no leg allocated, so automatically CALLER gets the first position, while
    the CALLEE legs will follow into the array in the same order they came */
 int dlg_update_leg_info(int leg_idx, struct dlg_cell *dlg, str* tag, str *rr,
-		str *contact, str *adv_ct, str *cseq, struct socket_info *sock,
+		str *contact, str *adv_ct, str *cseq, const struct socket_info *sock,
 		str *mangled_from,str *mangled_to,str *in_sdp, str *out_sdp)
 {
 	struct dlg_leg *leg;
@@ -879,7 +889,7 @@ struct dlg_cell* get_dlg_by_val(struct sip_msg *msg, str *attr, pv_spec_t *val)
 			LM_DBG("dlg in state %d to check\n",dlg->state);
 			if ( dlg->state>DLG_STATE_CONFIRMED )
 				continue;
-			if (check_dlg_value_unsafe(msg, dlg, attr, val)==0) {
+			if (check_dlg_value(msg, dlg, attr, val, 1)==0) {
 				ref_dlg_unsafe( dlg, 1);
 				dlg_unlock( d_table, d_entry);
 				return dlg;
@@ -1388,7 +1398,7 @@ static inline int internal_mi_print_dlg(mi_item_t *dialog_obj,
 				goto error;
 	}
 
-	_ts = (time_t)(dlg->tl.timeout?((unsigned int)time(0) +
+	_ts = (time_t)(dlg->tl.timeout?((unsigned int)(unsigned long)time(0) +
                 dlg->tl.timeout - get_ticks()):0);
 	if (add_mi_number(dialog_obj, MI_SSTR("timeout"), _ts) < 0)
 		goto error;
@@ -1492,10 +1502,14 @@ static inline int internal_mi_print_dlg(mi_item_t *dialog_obj,
 		if (!context_obj)
 			goto error;
 
+		lock_start_read(dlg->vals_lock);
+
 		if (dlg->vals) {
 			values_arr = add_mi_array(context_obj, MI_SSTR("values"));
-			if (!values_arr)
+			if (!values_arr) {
+				lock_stop_read(dlg->vals_lock);
 				goto error;
+			}
 
 			/* print dlg values -> iterate the list */
 			for( dv=dlg->vals ; dv ; dv=dv->next) {
@@ -1528,10 +1542,16 @@ static inline int internal_mi_print_dlg(mi_item_t *dialog_obj,
 					}
 
 					values_item = add_mi_object(values_arr, NULL, 0);
-					if (!values_item)
+					if (!values_item) {
+						lock_stop_read(dlg->vals_lock);
 						goto error;
-					if (add_mi_string(values_item,dv->name.s,dv->name.len,p,j) < 0)
+					}
+
+					if (add_mi_string(values_item,dv->name.s,dv->name.len,p,j) < 0) {
+						lock_stop_read(dlg->vals_lock);
 						goto error;
+					}
+
 				} else {
 					values_item = add_mi_object(values_arr, NULL, 0);
 					if (!values_item)
@@ -1542,6 +1562,8 @@ static inline int internal_mi_print_dlg(mi_item_t *dialog_obj,
 				}
 			}
 		}
+
+		lock_stop_read(dlg->vals_lock);
 
 		/* print dlg profiles */
 		if (dlg->profile_links) {
@@ -1861,4 +1883,187 @@ not_found:
 	return init_mi_error(404, MI_SSTR(MI_DIALOG_NOT_FOUND));
 dlg_error:
 	return init_mi_error(403, MI_SSTR(MI_DLG_OPERATION_ERR));
+}
+
+mi_response_t *mi_set_dlg_profile(const mi_params_t *params,
+								struct mi_handler *async_hdl)
+{
+	str profile_name={0,0},profile_value={0,0},dialog_id={0,0};
+	struct dlg_cell * dlg = NULL;
+	int shtag_state = 1, db_update = 0, clear_values = 0;
+	struct dlg_profile_table *profile;
+
+	if ( d_table == NULL)
+		goto not_found;	
+
+	/* params : dialog_id profile_name [profile_value] */
+	if (get_mi_string_param(params, "DID",
+		&dialog_id.s, &dialog_id.len) < 0)
+		return init_mi_param_error();
+
+	if (get_mi_string_param(params, "profile",
+		&profile_name.s, &profile_name.len) < 0)
+		return init_mi_param_error();
+
+	get_mi_string_param(params, "value",
+		&profile_value.s, &profile_value.len);
+
+	get_mi_int_param(params, "clear_values",
+		&clear_values);
+
+	profile = search_dlg_profile(&profile_name);
+	if (!profile) {
+		LM_ERR("profile <%.*s> not defined\n", profile_name.len,profile_name.s);
+		goto bad_param;
+	}
+
+	/* Get the dialog based of the dialog_id. This may be a
+	 * numerical DID or a string SIP Call-ID */
+	dlg = get_dlg_by_dialog_id(&dialog_id);
+	if (dlg == NULL) {
+		goto not_found; 
+	}
+
+	if (dialog_repl_cluster) {
+		shtag_state = get_shtag_state(dlg);
+		if (shtag_state < 0) {
+			goto dlg_error;
+		} else if (shtag_state == 0) {
+			/* editing dlg profiles on backup servers - no no */
+			unref_dlg(dlg, 1);
+			return init_mi_error(403, MI_SSTR("Editing Backup"));
+		}
+	}
+
+	if (profile->has_value && profile_value.s) {
+
+		if (clear_values) {
+			if (unset_dlg_profile_all_values(dlg, profile) < 0) {
+				LM_DBG("dialog not found in profile %.*s\n",
+				       profile_name.len, profile_name.s);
+			}
+		}
+
+		if ( set_dlg_profile( dlg, &profile_value, profile, 0) < 0 ) {
+			LM_ERR("failed to set profile\n");
+			goto dlg_error;
+		}
+	} else {
+		if ( set_dlg_profile( dlg, NULL, profile, 0) < 0 ) {
+			LM_ERR("failed to set profile\n");
+			goto dlg_error;
+		}
+	}
+
+	if (dlg->state >= DLG_STATE_CONFIRMED && dlg_db_mode == DB_MODE_REALTIME) {
+		db_update = 1;
+	} else {
+		dlg->flags |= DLG_FLAG_CHANGED;
+		db_update = 0;
+	}
+
+	if (db_update)
+		update_dialog_timeout_info(dlg);
+	if (dialog_repl_cluster && shtag_state != SHTAG_STATE_BACKUP)
+		replicate_dialog_updated(dlg);
+
+	unref_dlg(dlg, 1);
+	return init_mi_result_ok();
+
+not_found:
+	return init_mi_error(404, MI_SSTR("Dialog Not Found"));
+bad_param:
+	return init_mi_error( 400, MI_SSTR("Bad param"));
+dlg_error:
+	unref_dlg(dlg, 1);
+	return init_mi_error(403, MI_SSTR("Dialog Error"));
+}
+
+mi_response_t *mi_unset_dlg_profile(const mi_params_t *params,
+								struct mi_handler *async_hdl)
+{
+	str profile_name={0,0},profile_value={0,0},dialog_id={0,0};
+	struct dlg_cell * dlg = NULL;
+	int shtag_state = 1, db_update = 0;
+	struct dlg_profile_table *profile;
+
+	if ( d_table == NULL)
+		goto not_found;	
+
+	/* params : dialog_id profile_name [profile_value] */
+	if (get_mi_string_param(params, "DID",
+		&dialog_id.s, &dialog_id.len) < 0)
+		return init_mi_param_error();
+
+	if (get_mi_string_param(params, "profile",
+		&profile_name.s, &profile_name.len) < 0)
+		return init_mi_param_error();
+
+	get_mi_string_param(params, "value",
+		&profile_value.s, &profile_value.len);
+
+	profile = search_dlg_profile(&profile_name);
+	if (!profile) {
+		LM_ERR("profile <%.*s> not defined\n", profile_name.len,profile_name.s);
+		goto bad_param;
+	}
+
+	/* Get the dialog based of the dialog_id. This may be a
+	 * numerical DID or a string SIP Call-ID */
+	dlg = get_dlg_by_dialog_id(&dialog_id);
+	if (dlg == NULL) {
+		goto not_found; 
+	}
+
+	if (dialog_repl_cluster) {
+		shtag_state = get_shtag_state(dlg);
+		if (shtag_state < 0) {
+			goto dlg_error;
+		} else if (shtag_state == 0) {
+			/* editing dlg profiles on backup servers - no no */
+			unref_dlg(dlg, 1);
+			return init_mi_error(403, MI_SSTR("Editing Backup"));
+		}
+	}
+
+	if (profile->has_value) {
+
+		if (profile_value.s == NULL) {
+			if (unset_dlg_profile_all_values(dlg, profile) < 0) {
+				LM_DBG("dialog not found in profile %.*s\n",
+				       profile_name.len, profile_name.s);
+			}
+		} else if ( unset_dlg_profile( dlg, &profile_value, profile) < 0 ) {
+			LM_ERR("failed to unset profile\n");
+			goto dlg_error;
+		}
+	} else {
+		if ( unset_dlg_profile( dlg, NULL, profile) < 0 ) {
+			LM_ERR("failed to set profile\n");
+			goto dlg_error;
+		}
+	}
+
+	if (dlg->state >= DLG_STATE_CONFIRMED && dlg_db_mode == DB_MODE_REALTIME) {
+		db_update = 1;
+	} else {
+		dlg->flags |= DLG_FLAG_CHANGED;
+		db_update = 0;
+	}
+
+	if (db_update)
+		update_dialog_timeout_info(dlg);
+	if (dialog_repl_cluster && shtag_state != SHTAG_STATE_BACKUP)
+		replicate_dialog_updated(dlg);
+
+	unref_dlg(dlg, 1);
+	return init_mi_result_ok();
+
+not_found:
+	return init_mi_error(404, MI_SSTR("Dialog Not Found"));
+bad_param:
+	return init_mi_error( 400, MI_SSTR("Bad param"));
+dlg_error:
+	unref_dlg(dlg, 1);
+	return init_mi_error(403, MI_SSTR("Dialog Error"));
 }

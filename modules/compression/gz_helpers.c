@@ -23,6 +23,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <limits.h>
 #include "zlib.h"
 
 #include "compression_helpers.h"
@@ -117,15 +118,21 @@ int gzip_uncompress(unsigned char* in, unsigned long ilen, str* out, unsigned lo
 	z_stream zlibStream;
 	int rc, neededSize;
 
-	if (!in || !ilen) {
-		LM_ERR("nothing to compress\n");
-		return -1;
+	if (!in || ilen < 4) {
+		LM_ERR("invalid gzip input\n");
+		return Z_DATA_ERROR;
 	}
 
 	/* Gzip holds the length of the original message
 		in the last 4 bytes */
-	*olen = (in[ilen-1] << 24) + (in[ilen-2] << 16) +
-				(in[ilen-3] << 8) + in[ilen-4];
+	*olen =	((unsigned long)in[ilen-1] << 24) +
+			((unsigned long)in[ilen-2] << 16) +
+			((unsigned long)in[ilen-3] << 8) +
+			(unsigned long)in[ilen-4];
+	if (*olen > INT_MAX - 1) {
+		LM_ERR("uncompressed gzip size too large: %lu\n", *olen);
+		return Z_BUF_ERROR;
+	}
 	neededSize = *olen+1; /*'\0'*/
 
 	zlibStream.zalloc = Z_NULL;
@@ -176,7 +183,7 @@ int gzip_uncompress(unsigned char* in, unsigned long ilen, str* out, unsigned lo
 		}
 	} while (rc != Z_STREAM_END);
 
-	deflateEnd(&zlibStream);
+	inflateEnd(&zlibStream);
 	return Z_OK;
 memerr:
 	inflateEnd(&zlibStream);

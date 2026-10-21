@@ -25,10 +25,21 @@
 #include "../../pvar.h"
 #include "../../socket_info.h"
 
+#define SIPREC_DEFAULT_INSTANCE "default"
+
 struct srec_var {
-	str group, caller, callee, media, headers;
-	struct socket_info *si;
+	str group;
+	str caller;
+	str callee;
+	str media;
+	str headers;
+	str from_uri;
+	str to_uri;
+	str group_custom_extension;
+	str session_custom_extension;
+	const struct socket_info *si;
 };
+extern str siprec_default_instance;
 
 int init_srec_var(void);
 int pv_parse_siprec(pv_spec_p sp, const str *in);
@@ -36,7 +47,8 @@ int pv_get_siprec(struct sip_msg *msg,  pv_param_t *param,
 		pv_value_t *val);
 int pv_set_siprec(struct sip_msg* msg, pv_param_t *param,
 		int op, pv_value_t *val);
+int pv_parse_siprec_instance(pv_spec_p sp, const str *in);
 
-struct srec_var *get_srec_var(void);
+struct srec_var *get_srec_var(str *instance);
 
 #endif /* _SIPREC_VAR_H_ */

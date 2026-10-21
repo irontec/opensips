@@ -422,19 +422,6 @@ int acc_comm_to_acc_param(struct sip_msg* rq, str* comm, struct acc_param* accp)
 	return 0;
 }
 
-static inline int has_totag(struct sip_msg *msg)
-{
-	/* check if it has to tag */
-	if ( (!msg->to && parse_headers(msg, HDR_TO_F,0)<0) || !msg->to ) {
-		LM_ERR("bad request or missing TO hdr :-/\n");
-		return 0;
-	}
-	if (get_to(msg)->tag_value.s != 0 && get_to(msg)->tag_value.len != 0)
-		return 1;
-	return 0;
-}
-
-
 /* is this reply of interest for accounting ? */
 static inline int should_acc_reply(struct sip_msg *req,struct sip_msg *rpl,
 								int code, unsigned long long* flags)
@@ -470,6 +457,7 @@ static inline void acc_onreply_in(struct cell *t, struct sip_msg *req,
 				|| (is_invite(t)
 					&& code >= 300
 					&& is_mc_acc_on(ctx->flags)))) {
+		/* coverity[check_return: FALSE] */
 		parse_headers(reply, HDR_TO_F, 0 );
 	}
 }

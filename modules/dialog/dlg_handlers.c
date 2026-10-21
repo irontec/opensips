@@ -76,7 +76,7 @@ static void dlg_update_req_info(str *buffer, struct dlg_cell *dlg, int leg,
 
 
 static void dlg_update_ack_sdp(struct sip_msg* req, str *buffer, int rpl_code,
-				union sockaddr_union *to, struct socket_info *sock, int proto)
+				const union sockaddr_union *to, const struct socket_info *sock, int proto)
 {
 	struct dlg_cell *dlg;
 
@@ -548,11 +548,21 @@ static inline void push_reply_in_dialog(struct sip_msg *req, struct sip_msg *rpl
 		}
 	}
 
-	leg = d_tmb.get_branch_index() + 1;
-
+	leg = DLG_FIRST_CALLEE_LEG;
+	/* find the first leg belonging to this transaction branch */
+	while (leg<dlg->legs_no[DLG_LEGS_USED] &&
+			dlg->legs[leg].branch_id != d_tmb.get_branch_index() + 1)
+		leg++;
+	if (leg >= dlg->legs_no[DLG_LEGS_USED]) {
+		LM_BUG("dialog leg %d[%.*s] without tm %d branch\n",
+				leg, tag.len, tag.s, d_tmb.get_branch_index() + 1);
+		if (ensure_leg_array(leg + 1, dlg) != 0)
+			goto out;
+		leg = dlg->legs_no[DLG_LEGS_USED]++;
+		dlg->legs[leg].branch_id = d_tmb.get_branch_index() + 1;
+	} else if (leg_is_answered(&dlg->legs[leg])) {
 	/* has the downstream element forked an extra branch starting from ours?
 	 * Treat these extra branches exactly the same (a callee leg) */
-	if (leg_is_answered(&dlg->legs[leg])) {
 		leg = dlg_clone_callee_leg(dlg, leg);
 		if (leg < 0) {
 			LM_ERR("failed to add callee leg!\n");
@@ -760,7 +770,7 @@ static void dlg_onreply(struct cell* t, int type, struct tmcb_params *param)
 
 
 		/* set start time */
-		dlg->start_ts = (unsigned int)(time(0));
+		dlg->start_ts = (unsigned int)(unsigned long)(time(0));
 
 		if (0 != insert_dlg_timer( &dlg->tl, dlg->lifetime )) {
 			LM_CRIT("Unable to insert dlg %p [%u:%u] on event %d [%d->%d] "
@@ -967,6 +977,7 @@ static void dlg_update_req_info(str *buffer, struct dlg_cell *dlg, int leg,
 	if (t && is_invite(t))
 		dlg_leg_push_cseq_map(dlg, t, DLG_CALLER_LEG, &msg);
 	dlg_update_out_sdp(dlg, leg, other_leg(dlg, leg), &msg,
+			msg.first_line.type == SIP_REQUEST &&
 			msg.REQ_METHOD != METHOD_ACK);
 	free_sip_msg(&msg);
 }
@@ -1423,12 +1434,15 @@ static void dlg_onreq_out(struct cell* t, int type, struct tmcb_params *ps)
 	 */
 	dlg_lock_dlg(dlg);
 
-	callee_leg = d_tmb.get_branch_index() + 1;
+	callee_leg = dlg->legs_no[DLG_LEGS_USED];
+	LM_DBG("pushing new leg %d\n", callee_leg);
 	if (ensure_leg_array(callee_leg + 1, dlg) != 0)
 		goto out_free;
 
 	/* store the caller SDP into each callee leg, useful for Re-INVITE pings */
 	leg = &dlg->legs[callee_leg];
+	leg->branch_id = d_tmb.get_branch_index() + 1;
+	dlg->legs_no[DLG_LEGS_USED] = callee_leg + 1;
 
 	dlg_unlock_dlg(dlg);
 
@@ -1453,8 +1467,6 @@ static void dlg_onreq_out(struct cell* t, int type, struct tmcb_params *ps)
 		}
 	}
 
-	dlg->legs_no[DLG_LEGS_USED]++;
-
 out_free:
 	dlg_unlock_dlg(dlg);
 	free_sip_msg(msg);
@@ -1474,6 +1486,7 @@ static inline int dlg_update_contact(struct dlg_cell *dlg, struct sip_msg *msg,
 	str contact, new_ct, old_ct;
 	int ret = 0;
 	contact_t *ct = NULL;
+	contact_body_t *parsed_body = NULL;
 
 	if (!msg->contact &&
 		(parse_headers(msg, HDR_CONTACT_F, 0) < 0 || !msg->contact)) {
@@ -1491,7 +1504,14 @@ static inline int dlg_update_contact(struct dlg_cell *dlg, struct sip_msg *msg,
 		contact = ct->uri;
 		LM_DBG("Found unparsed contact [%.*s]\n", contact.len, contact.s);
 	} else {
-		contact = ((contact_body_t *)msg->contact->parsed)->contacts->uri;
+		parsed_body = (contact_body_t *)msg->contact->parsed;
+
+		if (parsed_body->star == 1) {
+			LM_WARN("Invalid star Contact in dialog update!\n");
+			return 0;
+		}
+
+		contact = parsed_body->contacts->uri;
 	}
 
 	/* if the same contact, don't do anything */
@@ -2155,7 +2175,7 @@ after_unlock5:
 		return;
 	}
 
-	if ( (event==DLG_EVENT_REQ || event==DLG_EVENT_REQACK)
+	if ( (event==DLG_EVENT_REQ || event==DLG_EVENT_REQACK || event==DLG_EVENT_REQPRACK)
 	&& (new_state==DLG_STATE_CONFIRMED || new_state==DLG_STATE_CONFIRMED_NA) ) {
 		LM_DBG("sequential request successfully processed (dst_leg=%d)\n",
 			dst_leg);
@@ -2249,6 +2269,8 @@ after_unlock5:
 					req->msg_flags |= FL_USE_UAC_CSEQ;
 				}
 
+				if (dialog_repl_cluster)
+					replicate_dialog_cseq_updated(dlg, dst_leg);
 				dlg_unlock( d_table, d_entry );
 
 				LM_DBG("nonACK req [%d],NULL,%d)\n",
@@ -2288,6 +2310,8 @@ after_unlock5:
 				else {
 					LM_DBG("update_val=[%d]\n", update_val);
 				}
+				if (dialog_repl_cluster)
+					replicate_dialog_cseq_updated(dlg, dst_leg);
 				dlg_unlock( d_table, d_entry );
 
 				if (update_val && update_msg_cseq(req,0,update_val) != 0) {

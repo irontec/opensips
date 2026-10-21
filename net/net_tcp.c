@@ -51,6 +51,7 @@
 #include "../reactor.h"
 #include "../timer.h"
 #include "../ipc.h"
+#include "../cfg_reload.h"
 
 #include "tcp_passfd.h"
 #include "net_tcp_proc.h"
@@ -103,11 +104,13 @@ struct tcp_worker *tcp_workers=0;
  * quickly finding the corresponding connection for a reply */
 static unsigned int* connection_id=0;
 
+/* connections are created both by TCP main (on accept) and by any other
+ * process (on connect), so the counter above must be incremented under lock -
+ * otherwise concurrent creations may end up sharing the same connection ID */
+static gen_lock_t* connection_id_lock=0;
+
 /* array of TCP partitions */
 static struct tcp_partition tcp_parts[TCP_PARTITION_SIZE];
-
-/*!< tcp protocol number as returned by getprotobyname */
-static int tcp_proto_no=-1;
 
 /* communication socket from generic proc to TCP main */
 int unix_tcp_sock = -1;
@@ -170,7 +173,7 @@ static struct scaling_profile *s_profile = NULL;
 /****************************** helper functions *****************************/
 extern void handle_sigs(void);
 
-static inline int init_sock_keepalive(int s, struct tcp_conn_profile *prof)
+static inline int init_sock_keepalive(int s, const struct tcp_conn_profile *prof)
 {
 	int ka;
 #if defined(HAVE_TCP_KEEPINTVL) || defined(HAVE_TCP_KEEPIDLE) || defined(HAVE_TCP_KEEPCNT)
@@ -234,23 +237,24 @@ static inline void set_sock_reuseport(int s)
 /*! \brief Set all socket/fd options:  disable nagle, tos lowdelay,
  * non-blocking
  * \return -1 on error */
-int tcp_init_sock_opt(int s, struct tcp_conn_profile *prof, enum si_flags socketflags)
+int tcp_init_sock_opt(int s, const struct tcp_conn_profile *prof, enum si_flags socketflags, int sock_tos)
 {
 	int flags;
 	int optval;
 
 #ifdef DISABLE_NAGLE
 	flags=1;
-	if ( (tcp_proto_no!=-1) && (setsockopt(s, tcp_proto_no , TCP_NODELAY,
-					&flags, sizeof(flags))<0) ){
+	if (setsockopt(s, IPPROTO_TCP, TCP_NODELAY, &flags, sizeof(flags)) < 0){
 		LM_WARN("could not disable Nagle: %s\n", strerror(errno));
 	}
 #endif
 	/* tos*/
-	optval = tos;
-	if (setsockopt(s, IPPROTO_IP, IP_TOS, (void*)&optval,sizeof(optval)) ==-1){
-		LM_WARN("setsockopt tos: %s\n",	strerror(errno));
-		/* continue since this is not critical */
+	optval = (sock_tos > 0) ? sock_tos : tos;
+	if (optval > 0) {
+		if (setsockopt(s, IPPROTO_IP, IP_TOS, (void*)&optval,sizeof(optval)) ==-1){
+			LM_WARN("setsockopt tos: %s\n",	strerror(errno));
+			/* continue since this is not critical */
+		}
 	}
 
 	if (probe_max_sock_buff(s,1,MAX_SEND_BUFFER_SIZE,BUFFER_INCREMENT)) {
@@ -324,28 +328,26 @@ static int send2worker(struct tcp_connection* tcpconn,int rw)
 /* initializes an already defined TCP listener */
 int tcp_init_listener(struct socket_info *si)
 {
+	union sockaddr_union* addr = &si->su;
+
+	if (init_su(addr, &si->address, si->port_no)<0){
+		LM_ERR("could no init sockaddr_union\n");
+		return -1;
+	}
+
+	return 0;
+}
+
+/* binding an defined TCP listener */
+int tcp_bind_listener(struct socket_info *si)
+{
 	union sockaddr_union* addr;
 	int optval;
 #ifdef DISABLE_NAGLE
 	int flag;
-	struct protoent* pe;
-
-	if (tcp_proto_no==-1){ /* if not already set */
-		pe=getprotobyname("tcp");
-		if (pe==0){
-			LM_ERR("could not get TCP protocol number\n");
-			tcp_proto_no=-1;
-		}else{
-			tcp_proto_no=pe->p_proto;
-		}
-	}
 #endif
 
 	addr = &si->su;
-	if (init_su(addr, &si->address, si->port_no)<0){
-		LM_ERR("could no init sockaddr_union\n");
-		goto error;
-	}
 	si->socket = socket(AF2PF(addr->s.sa_family), SOCK_STREAM, 0);
 	if (si->socket==-1){
 		LM_ERR("socket failed with [%s]\n", strerror(errno));
@@ -353,9 +355,7 @@ int tcp_init_listener(struct socket_info *si)
 	}
 #ifdef DISABLE_NAGLE
 	flag=1;
-	if ( (tcp_proto_no!=-1) &&
-		 (setsockopt(si->socket, tcp_proto_no , TCP_NODELAY,
-					 &flag, sizeof(flag))<0) ){
+	if (setsockopt(si->socket, IPPROTO_TCP, TCP_NODELAY, &flag, sizeof(flag)) < 0){
 		LM_ERR("could not disable Nagle: %s\n",strerror(errno));
 	}
 #endif
@@ -375,11 +375,13 @@ int tcp_init_listener(struct socket_info *si)
 	}
 #endif
 	/* tos */
-	optval = tos;
-	if (setsockopt(si->socket, IPPROTO_IP, IP_TOS, (void*)&optval,
-	sizeof(optval)) ==-1){
-		LM_WARN("setsockopt tos: %s\n", strerror(errno));
-		/* continue since this is not critical */
+	optval = (si->tos > 0) ? si->tos : tos;
+	if (optval > 0) {
+		if (setsockopt(si->socket, IPPROTO_IP, IP_TOS, (void*)&optval,
+		sizeof(optval)) ==-1){
+			LM_WARN("setsockopt tos: %s\n", strerror(errno));
+			/* continue since this is not critical */
+		}
 	}
 
 	if (probe_max_sock_buff(si->socket,1,MAX_SEND_BUFFER_SIZE,
@@ -462,7 +464,7 @@ int tcp_get_correlation_id( unsigned int id, unsigned long long *cid)
 int tcp_conn_get(unsigned int id, struct ip_addr* ip, int port,
 		enum sip_protos proto, void *proto_extra_id,
 		struct tcp_connection** conn, int* conn_fd,
-		struct socket_info* send_sock)
+		const struct socket_info* send_sock)
 {
 	struct tcp_connection* c;
 	struct tcp_connection* tmp;
@@ -509,8 +511,8 @@ int tcp_conn_get(unsigned int id, struct ip_addr* ip, int port,
 				    proto == c->type &&
 				    ip_addr_cmp(ip, &c->rcv.src_ip) &&
 				    (proto_extra_id==NULL ||
-				    protos[proto].net.conn_match==NULL ||
-				    protos[proto].net.conn_match( c, proto_extra_id)) )
+				    protos[proto].net.stream.conn.match==NULL ||
+				    protos[proto].net.stream.conn.match( c, proto_extra_id)) )
 					goto found;
 			}
 			TCPCONN_UNLOCK(part);
@@ -759,8 +761,8 @@ static void __tcpconn_rm(struct tcp_connection* c, int no_event)
 	if (c->con_req)
 		shm_free(c->con_req);
 
-	if (protos[c->type].net.conn_clean)
-		protos[c->type].net.conn_clean(c);
+	if (protos[c->type].net.stream.conn.clean)
+		protos[c->type].net.stream.conn.clean(c);
 
 	if (!no_event) tcp_disconnect_event_raise(c);
 
@@ -791,8 +793,8 @@ static void tcpconn_rm(struct tcp_connection* c)
 	TCPCONN_UNLOCK(c->id);
 	lock_destroy(&c->write_lock);
 
-	if (protos[c->type].net.conn_clean)
-		protos[c->type].net.conn_clean(c);
+	if (protos[c->type].net.stream.conn.clean)
+		protos[c->type].net.stream.conn.clean(c);
 
 	shm_free(c);
 }
@@ -883,9 +885,21 @@ static inline void tcpconn_ref(struct tcp_connection* c)
 }
 
 
-static struct tcp_connection* tcpconn_new(int sock, union sockaddr_union* su,
-                    struct socket_info* si, struct tcp_conn_profile *prof,
-                    int state, int flags)
+static inline unsigned int tcpconn_next_id(void)
+{
+	unsigned int id;
+
+	lock_get(connection_id_lock);
+	id = (*connection_id)++;
+	lock_release(connection_id_lock);
+
+	return id;
+}
+
+
+static struct tcp_connection* tcpconn_new(int sock, const union sockaddr_union* su,
+                    const struct socket_info* si, const struct tcp_conn_profile *prof,
+                    int state, int flags, int in_main_proc)
 {
 	struct tcp_connection *c;
 	union sockaddr_union local_su;
@@ -920,7 +934,7 @@ static struct tcp_connection* tcpconn_new(int sock, union sockaddr_union* su,
 	c->rcv.dst_port = su_getport(&local_su);
 	print_ip("tcpconn_new: new tcp connection to: ", &c->rcv.src_ip, "\n");
 	LM_DBG("on port %d, proto %d\n", c->rcv.src_port, si->proto);
-	c->id=(*connection_id)++;
+	c->id=tcpconn_next_id();
 	c->cid = (unsigned long long)c->id
 				| ( (unsigned long long)(startup_time&0xFFFFFF) << 32 )
 					| ( (unsigned long long)(rand()&0xFF) << 56 );
@@ -939,12 +953,12 @@ static struct tcp_connection* tcpconn_new(int sock, union sockaddr_union* su,
 	c->hist = sh_push(c, con_hist);
 #endif
 
-	if (protos[si->proto].net.async_chunks) {
+	if (protos[si->proto].net.stream.async_chunks) {
 		c->async = shm_malloc(sizeof(struct tcp_async_data) +
-				protos[si->proto].net.async_chunks *
+				protos[si->proto].net.stream.async_chunks *
 				sizeof(struct tcp_async_chunk));
 		if (c->async) {
-			c->async->allocated = protos[si->proto].net.async_chunks;
+			c->async->allocated = protos[si->proto].net.stream.async_chunks;
 			c->async->oldest = 0;
 			c->async->pending = 0;
 		} else {
@@ -952,8 +966,8 @@ static struct tcp_connection* tcpconn_new(int sock, union sockaddr_union* su,
 			goto error;
 		}
 	}
-
-	tcp_connections_no++;
+	if(in_main_proc)
+		tcp_connections_no++;
 	return c;
 
 error:
@@ -970,8 +984,8 @@ error0:
  * IMPORTANT - the function assumes you want to create a new TCP conn as
  * a result of a connect operation - the conn will be set as connect !!
  * Accepted connection are triggered internally only */
-struct tcp_connection* tcp_conn_create(int sock, union sockaddr_union* su,
-		struct socket_info* si, struct tcp_conn_profile *prof,
+struct tcp_connection* tcp_conn_create(int sock, const union sockaddr_union* su,
+		const struct socket_info* si, struct tcp_conn_profile *prof,
 		int state, int send2main)
 {
 	struct tcp_connection *c;
@@ -980,14 +994,14 @@ struct tcp_connection* tcp_conn_create(int sock, union sockaddr_union* su,
 		tcp_con_get_profile(su, &si->su, si->proto, prof);
 
 	/* create the connection structure */
-	c = tcpconn_new(sock, su, si, prof, state, 0);
+	c = tcpconn_new(sock, su, si, prof, state, 0, !send2main);
 	if (c==NULL) {
 		LM_ERR("tcpconn_new failed\n");
 		return NULL;
 	}
 
-	if (protos[c->type].net.conn_init &&
-			protos[c->type].net.conn_init(c) < 0) {
+	if (protos[c->type].net.stream.conn.init &&
+			protos[c->type].net.stream.conn.init(c) < 0) {
 		LM_ERR("failed to do proto %d specific init for conn %p\n",
 				c->type, c);
 		tcp_conn_destroy(c);
@@ -1064,6 +1078,8 @@ static inline void tcpconn_destroy(struct tcp_connection* tcpconn)
 		/* force timeout */
 		tcpconn->lifetime=0;
 		tcpconn->state=S_CONN_BAD;
+		sh_log(tcpconn->hist, TCP_DEL_DELAY, "tcpconn_destroy delayed, (%d)",
+			tcpconn->refcnt);
 		LM_DBG("delaying (%p, flags %04x) ref = %d ...\n",
 				tcpconn, tcpconn->flags, tcpconn->refcnt);
 
@@ -1091,7 +1107,7 @@ void tcp_conn_destroy(struct tcp_connection* tcpconn)
  *           io events queued), >0 on success. success/error refer only to
  *           the accept.
  */
-static inline int handle_new_connect(struct socket_info* si)
+static inline int handle_new_connect(const struct socket_info* si)
 {
 	union sockaddr_union su;
 	struct tcp_connection* tcpconn;
@@ -1116,14 +1132,14 @@ static inline int handle_new_connect(struct socket_info* si)
 	}
 
 	tcp_con_get_profile(&su, &si->su, si->proto, &prof);
-	if (tcp_init_sock_opt(new_sock, &prof, si->flags)<0){
+	if (tcp_init_sock_opt(new_sock, &prof, si->flags, si->tos)<0){
 		LM_ERR("tcp_init_sock_opt failed\n");
 		close(new_sock);
 		return 1; /* success, because the accept was successful */
 	}
 
 	/* add socket to list */
-	tcpconn=tcpconn_new(new_sock, &su, si, &prof, S_CONN_OK, F_CONN_ACCEPTED);
+	tcpconn=tcpconn_new(new_sock, &su, si, &prof, S_CONN_OK, F_CONN_ACCEPTED, 1);
 	if (tcpconn){
 		tcpconn->refcnt++; /* safe, not yet available to the
 							  outside world */
@@ -1373,6 +1389,9 @@ inline static int handle_tcp_worker(struct tcp_worker* tcp_c, int fd_i)
 			tcpconn->flags&=~F_CONN_REMOVED_WRITE;
 			break;
 		case CONN_ERROR_TCPW:
+			LM_ERR("TCP_DBG - main: received conn %p / %u as faulty "
+				"(state %d, rfcnt=%d)\n", tcpconn, tcpconn->id,
+				tcpconn->state, tcpconn->refcnt);
 		case CONN_DESTROY:
 		case CONN_EOF:
 			/* WARNING: this will auto-dec. refcnt! */
@@ -1502,6 +1521,7 @@ inline static int handle_worker(struct process_table* p, int fd_i)
 			tcpconn->s=fd;
 			/* add tcpconn to the list*/
 			tcpconn_add(tcpconn);
+			tcp_connections_no++;
 			reactor_add_reader( tcpconn->s, F_TCPCONN, RCT_PRIO_NET, tcpconn);
 			tcpconn->flags&=~F_CONN_REMOVED_READ;
 			break;
@@ -1515,6 +1535,7 @@ inline static int handle_worker(struct process_table* p, int fd_i)
 			tcpconn->s=fd;
 			/* add tcpconn to the list*/
 			tcpconn_add(tcpconn);
+			tcp_connections_no++;
 			/* FIXME - now we have lifetime==default_lifetime - should we
 			 * set a shorter one when waiting for a connect ??? */
 			/* only maintain the socket in the IO_WATCH_WRITE watcher
@@ -1524,8 +1545,11 @@ inline static int handle_worker(struct process_table* p, int fd_i)
 			tcpconn->flags&=~F_CONN_REMOVED_WRITE;
 			break;
 		case ASYNC_WRITE_GENW:
+			sh_log(tcpconn->hist,TCP_UNREF,"ASYNC_WRITE_GENW, (%d)",
+				tcpconn->refcnt);
 			if (tcpconn->state==S_CONN_BAD){
 				tcpconn->lifetime=0;
+				tcpconn_put(tcpconn);
 				break;
 			}
 			tcpconn_put(tcpconn);
@@ -1564,7 +1588,7 @@ inline static int handle_io(struct fd_map* fm, int idx,int event_type)
 	pt_become_active();
 	switch(fm->type){
 		case F_TCP_LISTENER:
-			ret = handle_new_connect((struct socket_info*)fm->data);
+			ret = handle_new_connect((const struct socket_info*)fm->data);
 			break;
 		case F_TCPCONN:
 			ret = handle_tcpconn_ev((struct tcp_connection*)fm->data, idx,
@@ -1670,7 +1694,7 @@ static void tcp_main_server(void)
 {
 	static unsigned int last_sec = 0;
 	int flags;
-	struct socket_info* si;
+	struct socket_info_full* sif;
 	int n;
 
 	/* we run in a separate, dedicated process, with its own reactor
@@ -1683,7 +1707,14 @@ static void tcp_main_server(void)
 	/* add all the sockets we listens on for connections */
 	for( n=PROTO_FIRST ; n<PROTO_LAST ; n++ )
 		if ( is_tcp_based_proto(n) )
-			for( si=protos[n].listeners ; si ; si=si->next ) {
+			for( sif=protos[n].listeners ; sif ; sif=sif->next ) {
+				struct socket_info* si = &sif->socket_info;
+				if (protos[n].tran.bind_listener && protos[n].tran.bind_listener(si)<0) {
+					LM_ERR("failed to bind listener [%.*s], proto %s\n",
+							si->name.len, si->name.s,
+							protos[n].name );
+					goto error;
+				}
 				if ( (si->socket!=-1) &&
 				reactor_add_reader( si->socket, F_TCP_LISTENER,
 				RCT_PRIO_NET, si)<0 ) {
@@ -1811,6 +1842,17 @@ int tcp_init(void)
 	// The  rand()  function returns a pseudo-random integer in the range 0 to
 	// RAND_MAX inclusive (i.e., the mathematical range [0, RAND_MAX]).
 	*connection_id=(unsigned int)rand();
+	connection_id_lock=lock_alloc();
+	if (connection_id_lock==0){
+		LM_CRIT("could not alloc connection ID lock\n");
+		goto error;
+	}
+	if (lock_init(connection_id_lock)==0){
+		LM_CRIT("could not init connection ID lock\n");
+		lock_dealloc((void*)connection_id_lock);
+		connection_id_lock=0;
+		goto error;
+	}
 	memset( &tcp_parts, 0, TCP_PARTITION_SIZE*sizeof(struct tcp_partition));
 	/* init partitions */
 	for( i=0 ; i<TCP_PARTITION_SIZE ; i++ ) {
@@ -1866,6 +1908,12 @@ void tcp_destroy(void)
 	if (connection_id){
 		shm_free(connection_id);
 		connection_id=0;
+	}
+
+	if (connection_id_lock){
+		lock_destroy(connection_id_lock);
+		lock_dealloc((void*)connection_id_lock);
+		connection_id_lock=0;
 	}
 
 	for ( part=0 ; part<TCP_PARTITION_SIZE ; part++ ) {
@@ -1986,7 +2034,8 @@ static int fork_dynamic_tcp_process(void *foo)
 		tcp_workers[r].pid = getpid();
 
 		if (tcp_worker_proc_reactor_init(tcp_workers[r].main_unix_sock)<0||
-		init_child(20000) < 0) {
+		init_child(20000) ||
+		self_update_routing_script() < 0) {
 			goto error;
 		}
 
@@ -2061,7 +2110,7 @@ int tcp_start_processes(int *chd_rank, int *startup_done)
 {
 	int r, n, p_id;
 	int reader_fd[2]; /* for comm. with the tcp workers read  */
-	struct socket_info *si;
+	struct socket_info_full *sif;
 	const struct internal_fork_params ifp_sr_tcp = {
 		.proc_desc = "SIP receiver TCP",
 		.flags = OSS_PROC_NEEDS_SCRIPT,
@@ -2077,7 +2126,7 @@ int tcp_start_processes(int *chd_rank, int *startup_done)
 	 *  + no_listen_tcp */
 	for( r=0,n=PROTO_FIRST ; n<PROTO_LAST ; n++ )
 		if ( is_tcp_based_proto(n) )
-			for(si=protos[n].listeners; si ; si=si->next,r++ );
+			for(sif=protos[n].listeners; sif ; sif=sif->next,r++ );
 
 	/* create the socket pairs for ALL potential processes */
 	for(r=0; r<tcp_workers_max_no; r++){
@@ -2275,6 +2324,7 @@ mi_response_t *mi_tcp_list_conns(const mi_params_t *params,
 					/* add one node for each conn */
 					add_mi_number( conn_item, MI_SSTR("Alias port"),
 						conn->con_aliases[j].port );
+
 			}
 		}
 
