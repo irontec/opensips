@@ -179,6 +179,7 @@ static int is_maxfwd_lt(struct sip_msg *msg, int *limit)
 
 	if ( val<0 ) {
 		/* error or not found */
+		/* coverity[return_overflow: FALSE] */
 		return val-1;
 	} else if ( val >= *limit ) {
 		/* greater or equal than/to limit */

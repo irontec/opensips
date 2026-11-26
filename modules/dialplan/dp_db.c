@@ -79,7 +79,7 @@ void list_hash(dpl_id_t * , rw_lock_t *);
 
 dp_connection_list_p dp_conns;
 
-int test_db(dp_connection_list_p dp_connection)
+int dp_test_db(dp_connection_list_p dp_connection)
 {
 	if (!dp_connection->partition.s) {
 		LM_ERR("NULL partition name\n");
@@ -467,12 +467,12 @@ int str_to_shm(str src, str * dest)
 dpl_node_t * build_rule(db_val_t * values)
 {
 	tmrec_expr *parsed_timerec;
-	pcre * match_comp, *subst_comp;
+	pcre2_code * match_comp, *subst_comp;
 	struct subst_expr * repl_comp;
 	dpl_node_t * new_rule;
 	str match_exp, subst_exp, repl_exp, attrs, timerec;
 	int matchop;
-	int namecount;
+	uint32_t namecount;
 
 	matchop = VAL_INT(values+2);
 
@@ -524,10 +524,9 @@ dpl_node_t * build_rule(db_val_t * values)
 		}
 	}
 
-	pcre_fullinfo(
+	pcre2_pattern_info(
 		subst_comp, /* the compiled pattern */
-		NULL, /* no extra data - we didn't study the pattern */
-		PCRE_INFO_CAPTURECOUNT, /* number of named substrings */
+		PCRE2_INFO_CAPTURECOUNT, /* number of named substrings */
 		&namecount); /* where to put the answer */
 
 	LM_DBG("references:%d , max:%d\n",namecount,
@@ -880,7 +879,7 @@ dp_connection_list_p dp_add_connection(dp_head_p head)
 
 	/* *el->dp_db_handle is set to null at the end of test_db;
 	 * no need to do it again here */
-	if (test_db(el) != 0) {
+	if (dp_test_db(el) != 0) {
 		LM_ERR("Unable to test db\n");
 		shm_free(el);
 		return NULL;

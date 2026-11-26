@@ -110,7 +110,7 @@ typedef struct b2b_dlg
 	struct cell*         prack_tran;
 	struct cell*         cancel_tm_tran;
 	dlg_leg_t*           legs;
-	struct socket_info*  send_sock;
+	const struct socket_info*  send_sock;
 	unsigned int         last_reply_code;
 	int                  db_flag;
 	int                  replicated;
@@ -119,6 +119,8 @@ typedef struct b2b_dlg
 	struct b2b_tracer   *tracer;
 	void                *param;
 	b2b_param_free_cb    free_param;
+	unsigned int         ref;
+	int                  deleted;
 	str                  prack_headers;
 }b2b_dlg_t;
 

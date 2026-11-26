@@ -487,19 +487,47 @@ struct sip_msg*  sip_msg_cloner( struct sip_msg *org_msg, int *sip_msg_len,
 			case HDR_PPI_T:
 			case HDR_PAI_T:
 			case HDR_PRIVACY_T:
-			case HDR_RETRY_AFTER_T:
 			case HDR_CALL_INFO_T:
 			case HDR_WWW_AUTHENTICATE_T:
 			case HDR_PROXY_AUTHENTICATE_T:
+			case HDR_MIN_EXPIRES_T:
 			case HDR_FEATURE_CAPS_T:
+			case HDR_REPLACES_T:
+			case HDR_SECURITY_CLIENT_T:
+			case HDR_SECURITY_SERVER_T:
+			case HDR_SECURITY_VERIFY_T:
 				/* we ignore them for now even if they have something parsed*/
 				break;
 
+			/* not used in sip_msg, used in MSRP */
+			case HDR_TO_PATH_T:
+			case HDR_FROM_PATH_T:
+			case HDR_MESSAGE_ID_T:
+			case HDR_BYTE_RANGE_T:
+			case HDR_FAILURE_REPORT_T:
+			case HDR_SUCCESS_REPORT_T:
+			case HDR_STATUS_T:
+			case HDR_USE_PATH_T:
+
+			/* not having shortcut */
+			case HDR_RETRY_AFTER_T:
+			case HDR_VIA2_T:
+
+			/* not actual hdrs */
+			case HDR_OTHER_T:
+			case HDR_ERROR_T:
+			case HDR_EOH_T:
+				break;
+
+			/* we do not have a "default" on purpose, so we get
+			 * a compile err/war where a new HDR is added and we do 
+			 * not handle it here.
 			default:
 				if (hdr->parsed) {
 					LM_WARN("header body ignored: %d\n", hdr->type );
 				}
 				break;
+			*/
 		}/*switch*/
 	}/*for all headers*/
 
@@ -548,6 +576,7 @@ struct sip_msg*  sip_msg_cloner( struct sip_msg *org_msg, int *sip_msg_len,
 	/* avoid copying pointer to un-clonned structures */
 	new_msg->body = NULL;
 	new_msg->msg_cb = NULL;
+	new_msg->sdp_ops = NULL;
 
 	new_msg->msg_flags |= FL_SHM_CLONE;
 	p += ROUND4(sizeof(struct sip_msg));
@@ -636,7 +665,6 @@ struct sip_msg*  sip_msg_cloner( struct sip_msg *org_msg, int *sip_msg_len,
 				else if ( !new_msg->via2 )
 				{
 					LINK_SIBLING_HEADER(h_via1, new_hdr);
-					new_msg->h_via2 = new_hdr;
 					new_msg->via2 = via_body_cloner( new_msg->buf,
 						org_msg->buf, (struct via_body*)hdr->parsed, &p);
 					new_hdr->parsed  = (void*)new_msg->via2;
@@ -935,6 +963,39 @@ struct sip_msg*  sip_msg_cloner( struct sip_msg *org_msg, int *sip_msg_len,
 					new_msg->proxy_authenticate = new_hdr;
 				}
 				break;
+			case HDR_MIN_EXPIRES_T:
+				if (HOOK_NOT_SET(min_expires)) {
+					new_msg->min_expires = new_hdr;
+				}
+				break;
+			case HDR_FEATURE_CAPS_T:
+				if (HOOK_NOT_SET(feature_caps)) {
+					new_msg->feature_caps = new_hdr;
+				}
+				break;
+			case HDR_REPLACES_T:
+				if (HOOK_NOT_SET(replaces)) {
+					new_msg->replaces = new_hdr;
+				}
+				break;
+			case HDR_SECURITY_CLIENT_T:
+				if (HOOK_NOT_SET(security_client))
+					new_msg->security_client = new_hdr;
+				else
+					LINK_SIBLING_HEADER(security_client, new_hdr);
+				break;
+			case HDR_SECURITY_SERVER_T:
+				if (HOOK_NOT_SET(security_server))
+					new_msg->security_server = new_hdr;
+				else
+					LINK_SIBLING_HEADER(security_server, new_hdr);
+				break;
+			case HDR_SECURITY_VERIFY_T:
+				if (HOOK_NOT_SET(security_verify))
+					new_msg->security_verify = new_hdr;
+				else
+					LINK_SIBLING_HEADER(security_verify, new_hdr);
+				break;
 			default:
 				/* ignore the rest*/
 				;
@@ -1161,6 +1222,7 @@ int update_cloned_msg_from_msg(struct sip_msg *c_msg, struct sip_msg *msg)
 		return -1;
 	}
 
+
 	/* length of the new data lump structures */
 	l1_len = l2_len = l3_len = 0;
 	LUMP_LIST_LEN(l1_len, msg->add_rm);
@@ -1261,18 +1323,19 @@ int update_cloned_msg_from_msg(struct sip_msg *c_msg, struct sip_msg *msg)
 		free_sip_body( body_bk );
 	}
 
-	if (!(msg->msg_flags & FL_TM_FAKE_REQ)) {
-		/* if not a fake request, we should free old values right now,
-		 * otherwise we leak if it's a fake request, then we can't free 
-		 * old info now - we might still need it ( eg. to build a reply 
-		 * from the faked req ) - let the freeing happen when destryong
-		 * the fake req */
-		shm_lock();
-		if (add_rm_aux) shm_free_bulk(add_rm_aux);
-		if (body_lumps_aux) shm_free_bulk(body_lumps_aux);
-		if (reply_lump_aux) shm_free_bulk(reply_lump_aux);
-		shm_unlock();
-	}
+	/* if "msg" is a fake request, due to how the fake requests are built
+	 * from the t->uas.request, the fake request "msg" and the shm cloned
+	 * request "t->uas.request" may initially (entering this function) share
+	 * the lump lumps. So we need to be carefully what we free here. We free
+	 * the lump chunk from the old cloned request ONLY if they are not shared
+	 * with the "msg", otherwise just let them attached to the "msg" and
+	 * the "free_faked_req) will take care of them */
+	if (add_rm_aux && add_rm_aux != msg->add_rm)
+		shm_free(add_rm_aux);
+	if (body_lumps_aux && body_lumps_aux != msg->body_lumps)
+		shm_free(body_lumps_aux);
+	if (reply_lump_aux && reply_lump_aux != msg->reply_lump)
+		shm_free(reply_lump_aux);
 
 	c_msg->msg_flags |= FL_SHM_UPDATED;
 	return 0;

@@ -70,6 +70,12 @@ sh_var_t* add_shvar(const str *name)
 	hash_lock(sh_vars, e);
 
 	shv_holder = (sh_var_t **)hash_get(sh_vars, e, *name);
+	if (!shv_holder) {
+		LM_ERR("oom\n");
+		hash_unlock(sh_vars, e);
+		return NULL;
+	}
+
 	if (*shv_holder) {
 		hash_unlock(sh_vars, e);
 		return *shv_holder;
@@ -308,6 +314,7 @@ int pv_get_shvar(struct sip_msg *msg, pv_param_t *param,
 			return pv_get_null(msg, param, res);
 		}
 
+		param->pvv_flags = PV_PARAM_PVV_SHM;
 		memcpy(param->pvv.s, shv->v.value.s.s, shv->v.value.s.len);
 		param->pvv.len = shv->v.value.s.len;
 		param->pvv.s[param->pvv.len] = '\0';

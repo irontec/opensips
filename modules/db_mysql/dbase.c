@@ -164,6 +164,15 @@ static inline int wrapper_single_mysql_stmt_execute(const db_con_t *conn,
 		 * while MariaDB has it as ER_REFERENCED_TRG_DOES_NOT_EXIST
 		 */
 		case 4031:
+		/* The server-side prepared-statement cache no longer knows
+		 * about our stmt handle - e.g. after a managed-DB transparent
+		 * failover or a zero-downtime minor version upgrade (AWS Aurora),
+		 * where the backing instance is replaced while the client TCP
+		 * connection is preserved. libmysqlclient auto-reprepare (which
+		 * handles the related ER_NEED_REPREPARE case) does not kick in
+		 * here because the server has no record of the handle at all.
+		 * Fall back to the existing reconnect + re-prepare path. */
+		case ER_UNKNOWN_STMT_HANDLER:
 			return -1; /* reconnection error -> <0 */
 		default:
 			LM_CRIT("driver error (%i): %s\n", error, mysql_stmt_error(stmt));
@@ -1238,6 +1247,28 @@ out:
 	db_store_async_con(_h, (struct pool_con *)con);
 
 	return -2;
+}
+
+void db_mysql_async_timeout(db_con_t *_h, int fd, void *_priv)
+{
+	struct pool_con *con = (struct pool_con *)_priv;
+
+#ifdef EXTRA_DEBUG
+	if (!db_match_async_con(fd, _h)) {
+		LM_BUG("no conn match for fd %d", fd);
+		abort();
+	}
+#endif
+
+	db_switch_to_async(_h, con);
+	mysql_free_result(CON_RESULT(_h));
+	CON_RESULT(_h) = NULL;
+
+	/* we timed out, might as well disconnect */
+	switch_state_to_disconnected(_h);
+
+	db_switch_to_sync(_h);
+	db_store_async_con(_h, con);
 }
 
 int db_mysql_async_resume(db_con_t *_h, int fd, db_res_t **_r, void *_priv)

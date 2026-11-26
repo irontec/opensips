@@ -272,6 +272,7 @@ TCP_MAX_CONNECTIONS "tcp_max_connections"
 TCP_NO_NEW_CONN_BFLAG "tcp_no_new_conn_bflag"
 TCP_NO_NEW_CONN_RPLFLAG "tcp_no_new_conn_rplflag"
 TCP_KEEPALIVE           "tcp_keepalive"
+REACTOR_DBG_FD_CHECK    "REACTOR_DBG_FD_CHECK"
 TCP_KEEPCOUNT           "tcp_keepcount"
 TCP_KEEPIDLE            "tcp_keepidle"
 TCP_KEEPINTERVAL        "tcp_keepinterval"
@@ -321,6 +322,7 @@ TICK		\'
 SLASH		"/"
 AS			{EAT_ABLE}("as"|"AS"){EAT_ABLE}
 USE_WORKERS	{EAT_ABLE}("use_workers"|"USE_WORKERS"){EAT_ABLE}
+SOCK_TOS	{EAT_ABLE}("tos"|"TOS"){EAT_ABLE}
 USE_AUTO_SCALING_PROFILE {EAT_ABLE}("use_auto_scaling_profile"|"USE_AUTO_SCALING_PROFILE"){EAT_ABLE}
 SCALE_UP_TO		{EAT_ABLE}("scale"|"SCALE"){EAT_ABLE}+("up"|"UP"){EAT_ABLE}+("to"|"TO"){EAT_ABLE}
 SCALE_DOWN_TO	{EAT_ABLE}("scale"|"SCALE"){EAT_ABLE}+("down"|"DOWN"){EAT_ABLE}+("to"|"TO"){EAT_ABLE}
@@ -341,6 +343,7 @@ CR			\n
 
 ANY		"any"
 ANYCAST	("anycast"|"ANYCAST")
+ACCEPT_SUBDOMAIN ("accept_subdomain"|"ACCEPT_SUBDOMAIN")
 FRAG	("frag"|"FRAG")
 REUSE_PORT	("reuse_port"|"REUSE_PORT")
 
@@ -506,6 +509,7 @@ SPACE		[ ]
 <INITIAL>{TCP_MAX_CONNECTIONS}  { count(); yylval.strval=yytext;
 									return TCP_MAX_CONNECTIONS; }
 <INITIAL>{TCP_KEEPALIVE}       { count(); yylval.strval=yytext; return TCP_KEEPALIVE; }
+<INITIAL>{REACTOR_DBG_FD_CHECK} { count(); yylval.strval=yytext; return REACTOR_DBG_FD_CHECK; }
 <INITIAL>{TCP_KEEPCOUNT}       { count(); yylval.strval=yytext; return TCP_KEEPCOUNT; }
 <INITIAL>{TCP_KEEPIDLE}        { count(); yylval.strval=yytext; return TCP_KEEPIDLE; }
 <INITIAL>{TCP_KEEPINTERVAL}    { count(); yylval.strval=yytext; return TCP_KEEPINTERVAL; }
@@ -601,6 +605,7 @@ SPACE		[ ]
 <INITIAL>{COMMA}		{ count(); return COMMA; }
 <INITIAL>{SEMICOLON}	{ count(); return SEMICOLON; }
 <INITIAL>{USE_WORKERS}  { count(); return USE_WORKERS; }
+<INITIAL>{SOCK_TOS}	{ count(); return SOCK_TOS; }
 <INITIAL>{USE_AUTO_SCALING_PROFILE}  { count(); return USE_AUTO_SCALING_PROFILE; }
 <INITIAL>{COLON}	{ count(); return COLON; }
 <INITIAL>{RPAREN}	{ count(); return RPAREN; }
@@ -615,6 +620,7 @@ SPACE		[ ]
 <INITIAL>{CR}		{ count();/* return CR;*/ }
 <INITIAL>{ANY}		{ count(); return ANY; }
 <INITIAL>{ANYCAST}	{ count(); return ANYCAST; }
+<INITIAL>{ACCEPT_SUBDOMAIN}	{ count(); return ACCEPT_SUBDOMAIN; }
 <INITIAL>{REUSE_PORT}	{ count(); return REUSE_PORT; }
 <INITIAL>{FRAG}		{ count(); return FRAG; }
 <INITIAL>{SLASH}	{ count(); return SLASH; }

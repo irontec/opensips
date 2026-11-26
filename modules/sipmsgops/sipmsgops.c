@@ -53,6 +53,7 @@
 #include "../../msg_translator.h"
 #include "../../mod_fix.h"
 #include "../../trim.h"
+#include "../../lib/cJSON.h"
 
 #include "codecs.h"
 #include "list_hdr.h"
@@ -87,6 +88,7 @@ static int get_glob_headers_values(struct sip_msg* msg, str* pattern,pv_spec_t* 
 static int remove_hf_match_f(struct sip_msg* msg, void* pattern, int is_regex);
 static int is_present_hf(struct sip_msg* msg, void* _match_hf);
 static int append_to_reply_f(struct sip_msg* msg, str* key);
+static int append_body_to_reply_f(struct sip_msg* msg, str* key);
 static int append_hf(struct sip_msg *msg, str *str1, void *str2);
 static int insert_hf(struct sip_msg *msg, str *str1, void *str2);
 static int append_urihf(struct sip_msg *msg, str *str1, str *str2);
@@ -100,6 +102,7 @@ static int add_body_part_f(struct sip_msg *msg, str *body, str *mime,
 static int get_updated_body_part_f(struct sip_msg *msg, int *type,pv_spec_t* out);
 static int is_audio_on_hold_f(struct sip_msg *msg);
 static int w_sip_validate(struct sip_msg *msg, void *flags, pv_spec_t* err_txt);
+static int w_sip_to_json(struct sip_msg *msg, pv_spec_t* out_json);
 
 static int fixup_parse_hname(void** param);
 
@@ -112,6 +115,7 @@ static int fixup_validate_fl(void** param);
 static int list_hdr_has_option(struct sip_msg *msg, void *hdr, str *option);
 static int list_hdr_add_option(struct sip_msg *msg, void *hdr, str *option);
 static int list_hdr_remove_option(struct sip_msg *msg, void *hdr, str *option);
+static int w_has_totag(struct sip_msg *msg);
 
 static int change_reply_status_f(struct sip_msg* msg, int* code, str* reason);
 
@@ -119,6 +123,10 @@ static int mod_init(void);
 
 static const cmd_export_t cmds[]={
 	{"append_to_reply",  (cmd_function)append_to_reply_f, {
+		{CMD_PARAM_STR, 0, 0}, {0, 0, 0}},
+		REQUEST_ROUTE|FAILURE_ROUTE|BRANCH_ROUTE|ERROR_ROUTE},
+
+	{"append_body_to_reply",  (cmd_function)append_body_to_reply_f, {
 		{CMD_PARAM_STR, 0, 0}, {0, 0, 0}},
 		REQUEST_ROUTE|FAILURE_ROUTE|BRANCH_ROUTE|ERROR_ROUTE},
 
@@ -270,7 +278,7 @@ static const cmd_export_t cmds[]={
 		{CMD_PARAM_STR, 0, 0}, {0, 0, 0}},
 		REQUEST_ROUTE|ONREPLY_ROUTE|FAILURE_ROUTE|BRANCH_ROUTE|LOCAL_ROUTE},
 
-	{"has_totag", (cmd_function)has_totag, {{0, 0, 0}},
+	{"has_totag", (cmd_function)w_has_totag, {{0, 0, 0}},
 		REQUEST_ROUTE|ONREPLY_ROUTE|FAILURE_ROUTE|BRANCH_ROUTE|LOCAL_ROUTE},
 
 	{"ruri_has_param", (cmd_function)ruri_has_param, {
@@ -297,6 +305,9 @@ static const cmd_export_t cmds[]={
 	        {CMD_PARAM_VAR, 0, 0},
 	        {CMD_PARAM_VAR, 0, 0},
 		{0, 0, 0}},
+		REQUEST_ROUTE|ONREPLY_ROUTE|FAILURE_ROUTE|BRANCH_ROUTE|LOCAL_ROUTE},
+	{"sip_to_json",     (cmd_function)w_sip_to_json, {
+		{CMD_PARAM_VAR, 0, 0}, {0, 0, 0}},
 		REQUEST_ROUTE|ONREPLY_ROUTE|FAILURE_ROUTE|BRANCH_ROUTE|LOCAL_ROUTE},
 
 	{0,0,{{0,0,0}},0}
@@ -536,6 +547,27 @@ static int append_to_reply_f(struct sip_msg* msg, str* key)
 	{
 		LM_ERR("unable to add lump_rl\n");
 		return -1;
+	}
+
+	return 1;
+}
+
+
+static int append_body_to_reply_f(struct sip_msg* msg, str* body)
+{
+	struct lump_rpl *l;
+
+	l = get_lump_rpl( msg, LUMP_RPL_BODY);
+	if (l) {
+		if (replace_lump_rpl(l, body->s, body->len, LUMP_RPL_BODY)!=0) {
+			LM_ERR("unable to replace existing body lump_rl\n");
+			return -1;
+		}
+	} else {
+		if (add_lump_rpl( msg, body->s, body->len, LUMP_RPL_BODY)==NULL) {
+			LM_ERR("unable to create new body lump_rl\n");
+			return -1;
+		}
 	}
 
 	return 1;
@@ -984,8 +1016,8 @@ static int add_body_part_f(struct sip_msg *msg, str *body, str *mime,
 static int get_updated_body_part_f(struct sip_msg *msg, int *type, pv_spec_t* res)
 {
 	static str out = {NULL, 0};
-	struct body_part *p, *it;
-	unsigned int out_offs, orig_offs, parts;
+	struct body_part *p = NULL, *it;
+	unsigned int out_offs, orig_offs, parts = 0;
 	pv_value_t val;
 
 
@@ -1547,6 +1579,7 @@ static int check_hostname(str *domain)
 #define MAX_REASON 256
 
 enum sip_validation_failures {
+	SV_NO_ERROR=0,
 	SV_NO_MSG=-1,
 	SV_HDR_PARSE_ERROR=-2,
 	SV_NO_CALLID=-3,
@@ -1576,20 +1609,83 @@ enum sip_validation_failures {
 	SV_BAD_USERNAME=-27,
 	SV_FROM_USERNAME_ERROR=-28,
 	SV_TO_USERNAME_ERROR=-29,
+	SV_BAD_STAR_CONTACT=-30,
 	SV_GENERIC_FAILURE=-255
 };
 
+#define METHOD_WITH_CONTACT_HDR (METHOD_INVITE | METHOD_REGISTER | METHOD_UPDATE | METHOD_SUBSCRIBE | METHOD_REFER)
+
+static enum sip_validation_failures validate_contact_header(struct sip_msg *msg, enum request_method method, char reason[static MAX_REASON])
+{
+	struct hdr_field *ptr = NULL;
+	contact_t * contacts = NULL;
+	exp_body_t *expires_body = NULL;
+	struct sip_uri test_contacts;
+
+	if (method & METHOD_WITH_CONTACT_HDR) {
+		if (!msg->contact) {
+			strcpy(reason, "SIP message doesn't have 'Contact' header");
+			return SV_NO_CONTACT;
+		}
+
+		/* iterate through Contact headers */
+		for(ptr = msg->contact; ptr; ptr = ptr->sibling) {
+			/* parse Contact header */
+			if (!ptr->parsed && (parse_contact(ptr) < 0
+						|| !ptr->parsed)) {
+				strcpy(reason, "failed to parse 'Contact' header");
+				return SV_CONTACT_PARSE_ERROR;
+			}
+			contacts = ((contact_body_t*)ptr->parsed)->contacts;
+
+			if (contacts != NULL) {
+				/* iterate through URIs and check validty */
+				for (; contacts; contacts = contacts->next) {
+					if(parse_uri(contacts->uri.s, contacts->uri.len,
+								&test_contacts) < 0
+							|| test_contacts.host.len < 0) {
+						strcpy(reason, "failed to parse 'Contact' header");
+						return SV_CONTACT_PARSE_ERROR;
+					}
+				}
+			} else {
+				/* This is a star Contact header, valid only for REGISTER requests */
+				if (method == METHOD_REGISTER) {
+					if (msg->first_line.type == SIP_REPLY) {
+						strcpy(reason, "'Contact' header for REGISTER reply contains '*' only valid for REGISTER request");
+						return SV_BAD_STAR_CONTACT;
+					}
+
+					if (!msg->expires || (parse_expires(msg->expires) < 0 || !msg->expires->parsed)) {
+						strcpy(reason, "failed to parse 'Expires' header");
+						return SV_BAD_STAR_CONTACT;
+					}
+
+					expires_body = (exp_body_t*) msg->expires->parsed;
+
+					if (!expires_body || expires_body->val != 0) {
+						strcpy(reason, "'Expires' header greater than 0 for REGISTER 'Contact' header with '*' value");
+						return SV_BAD_STAR_CONTACT;
+					}
+				} else {
+					strcpy(reason, "'Contact' header for SIP message contains '*' only valid for REGISTER request");
+					return SV_BAD_STAR_CONTACT;
+				}
+			}
+		}
+	}
+
+	return SV_NO_ERROR;
+}
+
 static int w_sip_validate(struct sip_msg *msg, void *_flags, pv_spec_t* err_txt)
 {
-	unsigned int hdrs_len;
+	unsigned int hdrs_len, status_code;
 	unsigned long flags = (unsigned long)_flags;
 	int method;
 	str body;
-	struct hdr_field * ptr;
-	contact_t * contacts;
-	struct sip_uri test_contacts;
+	struct sip_uri *p_uri;
 	struct cseq_body * cbody;
-	struct to_body *from, *to;
 	pv_value_t pv_val;
 	char reason[MAX_REASON];
 	int ret = -SV_GENERIC_FAILURE;
@@ -1676,30 +1772,22 @@ static int w_sip_validate(struct sip_msg *msg, void *_flags, pv_spec_t* err_txt)
 
 	/* test to header uri */
 	if(flags & SIP_PARSE_TO) {
-		if(!msg->to->parsed) {
-			if(parse_to_header(msg) < 0) {
-				strcpy(reason, "failed to parse 'To' header");
-				ret = SV_TO_PARSE_ERROR;
-				goto failed;
-			}
-		}
 
-		to = (struct to_body*)msg->to->parsed;
-
-		if(parse_uri(to->uri.s, to->uri.len, &to->parsed_uri) < 0) {
+		if ( (p_uri=parse_to_uri(msg))==NULL ) {
 			strcpy(reason, "failed to parse 'To' header");
 			ret = SV_TO_PARSE_ERROR;
 			goto failed;
 		}
 
-		/* check for valid domain format */
-		if(check_hostname(&to->parsed_uri.host) < 0) {
+		/* check for valid domain format, if SIP/SIPS types */
+		if ( (p_uri->type==SIP_URI_T || p_uri->type==SIPS_URI_T) &&
+		check_hostname(&p_uri->host) < 0 ) {
 			strcpy(reason, "invalid domain for 'To' header");
 			ret = SV_TO_DOMAIN_ERROR;
 			goto failed;
 		}
 
-		if(!is_username_str(&to->parsed_uri.user)) {
+		if(!is_username_str(&p_uri->user)) {
 			strcpy(reason, "invalid username for 'To' header");
 			ret = SV_TO_USERNAME_ERROR;
 			goto failed;
@@ -1708,30 +1796,22 @@ static int w_sip_validate(struct sip_msg *msg, void *_flags, pv_spec_t* err_txt)
 
 	/* test from header uri */
 	if(flags & SIP_PARSE_FROM) {
-		if(!msg->from->parsed) {
-			if(parse_from_header(msg) < 0) {
-				strcpy(reason, "failed to parse 'From' header");
-				ret = SV_FROM_PARSE_ERROR;
-				goto failed;
-			}
-		}
 
-		from = (struct to_body*)msg->from->parsed;
-
-		if(parse_uri(from->uri.s, from->uri.len, &from->parsed_uri) < 0) {
+		if ( (p_uri=parse_from_uri(msg))==NULL ) {
 			strcpy(reason, "failed to parse 'From' header");
 			ret = SV_FROM_PARSE_ERROR;
 			goto failed;
 		}
 
-		/* check for valid domain format */
-		if(check_hostname(&from->parsed_uri.host) < 0) {
+		/* check for valid domain format, if SIP/SIPS types */
+		if ( (p_uri->type==SIP_URI_T || p_uri->type==SIPS_URI_T) &&
+		check_hostname(&p_uri->host) < 0 ) {
 			strcpy(reason, "invalid domain for 'From' header");
 			ret = SV_FROM_DOMAIN_ERROR;
 			goto failed;
 		}
 
-		if (!is_username_str(&from->parsed_uri.user)) {
+		if (!is_username_str(&p_uri->user)) {
 			strcpy(reason, "invalid username for 'From' header");
 			ret = SV_FROM_USERNAME_ERROR;
 			goto failed;
@@ -1767,38 +1847,11 @@ static int w_sip_validate(struct sip_msg *msg, void *_flags, pv_spec_t* err_txt)
 				CHECK_HEADER("", maxforwards);
 			}
 
-			if (msg->REQ_METHOD == METHOD_INVITE) {
-				ret = SV_NO_CONTACT;
-				CHECK_HEADER("INVITE", contact);
-				if(flags & SIP_PARSE_CONTACT) {
-					/* iterate through Contact headers */
-					for(ptr = msg->contact; ptr; ptr = ptr->sibling) {
-						/* parse Contact header */
-						if(!ptr->parsed && (parse_contact(ptr) < 0
-									|| !ptr->parsed)) {
-							strcpy(reason, "failed to parse 'Contact' header");
-							ret = SV_CONTACT_PARSE_ERROR;
-							goto failed;
-						}
-						contacts = ((contact_body_t*)ptr->parsed)->contacts;
-						/* empty contacts header - something must be wrong */
-						if(contacts == NULL) {
-							strcpy(reason, "empty body for 'Contact' header");
-							ret = SV_CONTACT_PARSE_ERROR;
-							goto failed;
-						}
-						/* iterate through URIs and check validty */
-						for(; contacts; contacts = contacts->next) {
-							if(parse_uri(contacts->uri.s, contacts->uri.len,
-										&test_contacts) < 0
-									|| test_contacts.host.len < 0) {
-								strcpy(reason, "failed to parse 'Contact' header");
-								ret = SV_CONTACT_PARSE_ERROR;
-								goto failed;
-							}
-						}
-					}
+			if (flags & SIP_PARSE_CONTACT) {
+				ret = validate_contact_header(msg, msg->REQ_METHOD, reason);
 
+				if (ret != SV_NO_ERROR) {
+					goto failed;
 				}
 			}
 
@@ -1821,8 +1874,9 @@ static int w_sip_validate(struct sip_msg *msg, void *_flags, pv_spec_t* err_txt)
 				goto failed;
 			}
 			method = cbody->method_id;
+			status_code = msg->first_line.u.reply.statuscode;
 			if (method != METHOD_CANCEL) {
-				switch (msg->first_line.u.reply.statuscode) {
+				switch (status_code) {
 					case 405:
 						ret = SV_NOALLOW_405;
 						CHECK_HEADER("", allow);
@@ -1849,6 +1903,14 @@ static int w_sip_validate(struct sip_msg *msg, void *_flags, pv_spec_t* err_txt)
 						ret = SV_NO_WWW_AUTH;
 						CHECK_HEADER("", www_authenticate);
 						break;
+				}
+			}
+
+			if (flags & SIP_PARSE_CONTACT && (status_code > 199 && status_code < 400)) {
+				ret = validate_contact_header(msg, method, reason);
+
+				if (ret != 0) {
+					goto failed;
 				}
 			}
 
@@ -2047,4 +2109,110 @@ static int get_glob_headers_values(struct sip_msg* msg, str* pattern,pv_spec_t* 
 		cnt++;
 	}
 	return cnt==0 ? -1 : 1;
+}
+
+static int w_sip_to_json(struct sip_msg *msg, pv_spec_t* out_json)
+{
+	cJSON *ret=NULL, *aux, *aux2, *arr;
+	struct hdr_field* it;
+	char hdr_name_buf[255];
+	str json_ret = {0,0};
+	pv_value_t pv_val;
+
+	if (!msg) {
+		LM_ERR("No SIP msg, can't convert to json\n");
+		return -1;
+	}	
+
+	if(parse_headers(msg, HDR_EOH_F, 0) < 0) {
+		LM_ERR("Failed to parse all SIP msg \n");
+		return -1;
+	}
+
+	ret = cJSON_CreateObject();
+
+	/* first line */
+	aux = cJSON_CreateStr(msg->buf,msg->first_line.len); 
+	if (!aux) {
+		LM_ERR("Failed to create 1st line json \n");
+		goto error;
+	}
+
+	cJSON_AddItemToObject(ret,"first_line",aux);
+
+	/* headers */
+	aux = cJSON_CreateObject();
+	if (!aux) {
+		LM_ERR("Failed to create headers json \n");
+		goto error;
+	}
+
+	for (it=msg->headers;it;it=it->next) {
+		if (it->name.len >= sizeof(hdr_name_buf)) {
+			LM_WARN("header name too long (%d), skipping\n", it->name.len);
+			continue;
+		}
+		memcpy(hdr_name_buf,it->name.s,it->name.len);
+		hdr_name_buf[it->name.len] = 0;
+
+		arr = cJSON_GetObjectItem(aux, hdr_name_buf);
+		if (!arr) {
+			arr = cJSON_CreateArray();
+			cJSON_AddItemToObject(aux,hdr_name_buf,arr);
+		}
+
+		aux2 =  cJSON_CreateStr(it->body.s,it->body.len);
+		if (!aux2) {
+			LM_ERR("Failed to create individual header json\n");
+			goto error;
+		}
+
+		cJSON_AddItemToArray(arr,aux2);
+	}
+	cJSON_AddItemToObject(ret,"headers",aux);
+
+	/* body */
+	if (msg->body) {
+		aux = cJSON_CreateStr(msg->body->body.s,msg->body->body.len); 
+		if (!aux) {
+			LM_ERR("Failed to create body json\n");
+			goto error;
+		}
+		cJSON_AddItemToObject(ret,"body",aux);
+	}
+
+	json_ret.s = cJSON_Print(ret);
+	if (!json_ret.s) {
+		LM_ERR("Failed to print json to string obj\n");
+		goto error;
+	}
+
+	cJSON_Minify(json_ret.s);
+	json_ret.len = strlen(json_ret.s);
+
+	pv_val.flags = PV_VAL_STR;
+	pv_val.rs = json_ret;
+
+	if (pv_set_value(msg,out_json,0,&pv_val) != 0) {
+		LM_ERR("Failed to set out json pvar \n");
+		goto error;
+	} 
+
+	pkg_free(json_ret.s);
+	cJSON_Delete(ret);
+
+	return 1;
+
+error:
+	if (ret)
+		cJSON_Delete(ret);
+	if (json_ret.s)
+		pkg_free(json_ret.s);
+
+	return -1;
+}
+
+static int w_has_totag(struct sip_msg *msg)
+{
+	return (has_totag(msg) ?1:-1);
 }

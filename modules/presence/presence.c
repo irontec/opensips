@@ -848,7 +848,7 @@ static mi_response_t *mi_list_shtable(const mi_params_t *params, str *from, str 
 	mi_response_t *resp;
 	mi_item_t *resp_arr;
 	subs_t *s;
-	unsigned int i,j;
+	unsigned int i;
 	char from_w[256], to_w[256];
 	str match_from = {0,0}, match_to = {0,0};
 	int rc;
@@ -869,12 +869,12 @@ static mi_response_t *mi_list_shtable(const mi_params_t *params, str *from, str 
 		to_w[to->len] = 0;
 	}
 
-	for (i = 0, j = 0; i < shtable_size; i++) {
+	for (i = 0; i < shtable_size; i++) {
 
 		lock_get(&subs_htable[i].lock);
 		for (s = subs_htable[i].entries->next; s; s = s->next) {
 			if (from) {
-				/* print subscribtion if "from" and "to" match with given wildcard */
+				/* print subscription if "from" and "to" match with given wildcard */
 				rc = from_to_match_subs(s, &match_from, &match_to, from_w, to_w);
 				if (rc < 0)
 					goto error;
@@ -884,7 +884,6 @@ static mi_response_t *mi_list_shtable(const mi_params_t *params, str *from, str 
 
 			if (mi_print_shtable_record(resp_arr, s) < 0)
 				goto error;
-			j++;
 		}
 		lock_release(&subs_htable[i].lock);
 	}
@@ -1478,7 +1477,7 @@ static int update_pw_dialogs(subs_t* subs, unsigned int hash_code, subs_t** subs
                 lock_release(&subs_htable[hash_code].lock);
                 return -1;
 			}
-			cs->expires-= (int)time(NULL);
+			cs->expires-= (unsigned int)(unsigned long)time(NULL);
 			cs->next= (*subs_array);
 			(*subs_array)= cs;
 			if(subs->status== TERMINATED_STATUS)

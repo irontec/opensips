@@ -1641,6 +1641,16 @@ error_exit:
 	return E_BAD_URI;
 }
 
+/* Trim a URI userinfo str at the first ';'; see trim_user_params() in
+ * parse_uri.h for the full contract and caveats. */
+void trim_user_params(str *user)
+{
+	char *semi = q_memchr(user->s, ';', user->len);
+
+	if (semi)
+		user->len = semi - user->s;
+}
+
 
 int parse_sip_msg_uri(struct sip_msg* msg)
 {
@@ -1741,6 +1751,25 @@ int compare_uris(str *raw_uri_a,struct sip_uri* parsed_uri_a,
 			if (strncasecmp(raw_uri_a->s,raw_uri_b->s,raw_uri_a->len) == 0)
 			{
 				LM_DBG("straight-forward URI match\n");
+				if (parse_uri(raw_uri_a->s,raw_uri_a->len,&first) < 0)
+				{
+					LM_ERR("Failed to parse first URI\n");
+					return -1;
+				}
+				if (parse_uri(raw_uri_b->s,raw_uri_b->len,&second) < 0)
+				{
+					LM_ERR("Failed to parse second URI\n");
+					return -1;
+				}
+				if (unescape_user(&first.user, &unescaped_userA) < 0 ||
+						unescape_user(&second.user, &unescaped_userB) < 0) {
+					LM_ERR("Failed to unescape user!\n");
+					return -1;
+				}
+				first.user = unescaped_userA;
+				second.user = unescaped_userB;
+				compare_uri_val(user,strncmp);
+				compare_uri_val(passwd,strncmp);
 				return 0;
 			}
 	}

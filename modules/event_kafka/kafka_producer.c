@@ -313,6 +313,8 @@ static int kafka_enq_msg(kafka_job_t *job)
 		} else {
 			LM_DBG("Enqueued message for topic: %s\n", prod->conf_strings->next->s);
 		}
+
+	/* coverity[overflow_const: FALSE] - when retries = 0 the while loop stops */
 	} while (rc < 0 && retries-- > 0);
 
 	return rc;
@@ -377,7 +379,7 @@ void kafka_report_status(int sender, void *param)
 {
 	struct kafka_report_param *p =
 		(struct kafka_report_param *)param;
-	script_job_data_t *job_data;
+	script_job_data_t *job_data = NULL;
 
 	if (p->job->type == KAFKA_JOB_EVI) {
 		evi_job_data_t *job_data = (evi_job_data_t *)p->job->data;
@@ -417,7 +419,7 @@ void kafka_report_status(int sender, void *param)
 	}
 
 free:
-	if (p->job->type == KAFKA_JOB_SCRIPT && job_data->report_rt)
+	if (p->job->type == KAFKA_JOB_SCRIPT && job_data && job_data->report_rt)
 		shm_free(job_data->report_rt);
 	shm_free(p->job);
 	shm_free(p);

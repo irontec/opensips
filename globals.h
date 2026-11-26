@@ -44,7 +44,7 @@ extern char *stat_file;
 extern char* pid_file;
 extern char* pgid_file;
 
-extern struct socket_info* bind_address; /*!< pointer to the crt. proc.  listening address */
+extern const struct socket_info* bind_address; /*!< pointer to the crt. proc.  listening address */
 
 extern int auto_aliases;
 
@@ -66,6 +66,7 @@ extern int tcp_socket_backlog;
 extern int tcp_max_fd_no;
 extern int tcp_max_connections;
 extern int tcp_keepalive;
+extern int reactor_dbg_fd_check;
 extern int tcp_keepcount;
 extern int tcp_keepidle;
 extern int tcp_keepinterval;

@@ -294,9 +294,9 @@ static int select_entire_dialog_table(db_res_t ** res, int *no_rows)
 
 
 
-struct socket_info * create_socket_info(db_val_t * vals, int n){
+const struct socket_info * create_socket_info(db_val_t * vals, int n){
 
-	struct socket_info * sock;
+	const struct socket_info * sock;
 	str p;
 
 	/* socket name */
@@ -322,7 +322,7 @@ static inline void strip_esc(str *s)
 	int len = s->len;
 
 	for ( ; len > 0; len--, c++) {
-		if (*c == '\\' &&
+		if (*c == '\\' && len > 1 &&
 				(*(c+1)=='\\' || *(c+1)=='#' || *(c+1)=='|')) {
 			memmove(c, c + 1, len - 1);
 			s->len--;
@@ -420,6 +420,8 @@ void read_dialog_vars(char *b, int l, struct dlg_cell *dlg)
 
 	end = b + l;
 	p = b;
+
+	lock_start_write(dlg->vals_lock);
 	do {
 		/* read a new pair from input string */
 		p = read_pair( p, end, &name, &isval, &type);
@@ -432,6 +434,7 @@ void read_dialog_vars(char *b, int l, struct dlg_cell *dlg)
 			LM_ERR("failed to add val, skipping...\n");
 	} while(p!=end);
 
+	lock_stop_write(dlg->vals_lock);
 }
 
 
@@ -568,7 +571,7 @@ static int load_dialog_info_from_db(int dlg_hash_size)
 	str callid, from_uri, to_uri, from_tag, to_tag;
 	str cseq1,cseq2,contact1,contact2,rroute1,rroute2,mangled_fu,mangled_tu;
 	int no_rows = 10;
-	struct socket_info *caller_sock,*callee_sock;
+	const struct socket_info *caller_sock,*callee_sock;
 	int found_ended_dlgs=0;
 	unsigned int hash_entry,hash_id;
 	int_str tag_name;
@@ -749,7 +752,7 @@ static int load_dialog_info_from_db(int dlg_hash_size)
 			if (dlg->tl.timeout<=(unsigned int)time(0))
 				dlg->tl.timeout = 0;
 			else
-				dlg->tl.timeout -= (unsigned int)time(0);
+				dlg->tl.timeout -= (unsigned int)(unsigned long)time(0);
 
 			/* restore the timer values */
 			if (0 != insert_dlg_timer( &(dlg->tl), (int)dlg->tl.timeout )) {
@@ -1027,7 +1030,7 @@ int update_dialog_timeout_info(struct dlg_cell * cell)
 	dlg_lock( d_table, &entry);
 
 	SET_BIGINT_VALUE(values, dlg_get_db_id(cell));
-	SET_INT_VALUE(values+1, (unsigned int)( (unsigned int)time(0) +
+	SET_INT_VALUE(values+1, (unsigned int)( (unsigned int)(unsigned long)time(0) +
 			 cell->tl.timeout - get_ticks()) );
 
 	CON_SET_CURR_PS(dialog_db_handle, &my_ps_update);
@@ -1123,7 +1126,7 @@ int update_dialog_dbinfo(struct dlg_cell * cell)
 		SET_STR_VALUE(values+10,cell->legs[callee_leg].to_uri);
 
 		SET_INT_VALUE(values+11, cell->state);
-		SET_INT_VALUE(values+12, (unsigned int)( (unsigned int)time(0) +
+		SET_INT_VALUE(values+12, (unsigned int)( (unsigned int)(unsigned long)time(0) +
 			 cell->tl.timeout - get_ticks()) );
 
 		SET_STR_VALUE(values+13, cell->legs[DLG_CALLER_LEG].r_cseq);
@@ -1171,7 +1174,7 @@ int update_dialog_dbinfo(struct dlg_cell * cell)
 
 		SET_BIGINT_VALUE(values, dlg_get_db_id(cell));
 		SET_INT_VALUE(values+11, cell->state);
-		SET_INT_VALUE(values+12, (unsigned int)( (unsigned int)time(0) +
+		SET_INT_VALUE(values+12, (unsigned int)( (unsigned int)(unsigned long)time(0) +
 				 cell->tl.timeout - get_ticks()) );
 
 		SET_STR_VALUE(values+13, cell->legs[DLG_CALLER_LEG].r_cseq);
@@ -1277,7 +1280,7 @@ static inline unsigned int write_pair( char *b, str *name, str *name_suffix,
 }
 
 
-str* write_dialog_vars( struct dlg_val *vars)
+str* write_dialog_vars( struct dlg_cell *dlg)
 {
 	static str o = {NULL,0};
 	static int o_l=0;
@@ -1286,8 +1289,10 @@ str* write_dialog_vars( struct dlg_val *vars)
 	char *p;
 	int intlen;
 
+	lock_start_read(dlg->vals_lock);
+
 	/* compute the required len */
-	for ( v=vars,l=0 ; v ; v=v->next) {
+	for ( v=dlg->vals,l=0 ; v ; v=v->next) {
 		l += v->name.len + 1/*'#'*/ + 1/*type char*/ + 1;/*'#'*/
 		if (v->type == DLG_VAL_TYPE_STR) {
 			l += v->val.s.len;
@@ -1311,18 +1316,21 @@ str* write_dialog_vars( struct dlg_val *vars)
 		if (o.s) pkg_free(o.s);
 		o.s = (char*)pkg_malloc(l);
 		if (o.s==NULL) {
+			lock_stop_read(dlg->vals_lock);
 			LM_ERR("not enough pkg mem (req=%d)\n",l);
 			return NULL;
 		}
 		o_l = l;
 	}
 
-	/* write the stuff into it */
+	/* write the stuff into it (still under read lock) */
 	o.len = l;
 	p = o.s;
-	for ( v=vars ; v ; v=v->next) {
+	for ( v=dlg->vals ; v ; v=v->next) {
 		p += write_pair( p, &v->name,NULL, &v->val, v->type);
 	}
+	lock_stop_read(dlg->vals_lock);
+
 	if (o.len!=p-o.s) {
 		LM_CRIT("BUG - buffer overflow allocated %d, written %d\n",
 			o.len,(int)(p-o.s));
@@ -1407,12 +1415,14 @@ int persist_reinvite_pinging(struct dlg_cell *dlg)
 		return 0;
 	}
 
+	lock_start_write(dlg->vals_lock);
+
 	val.s = dlg->legs[DLG_CALLER_LEG].in_sdp;
 	if (dlg->legs[DLG_CALLER_LEG].in_sdp.len &&
 			store_dlg_value_unsafe(dlg, &caller_in_sdp,
 				&val, DLG_VAL_TYPE_STR) != 0) {
 		LM_ERR("failed to persist caller UAC SDP\n");
-		return -1;
+		goto error;
 	}
 
 	val.s = dlg->legs[DLG_CALLER_LEG].out_sdp;
@@ -1420,14 +1430,14 @@ int persist_reinvite_pinging(struct dlg_cell *dlg)
 			store_dlg_value_unsafe(dlg, &caller_out_sdp,
 				&val, DLG_VAL_TYPE_STR) != 0) {
 		LM_ERR("failed to persist caller advertised SDP\n");
-		return -1;
+		goto error;
 	}
 
 	val.s = dlg->legs[DLG_CALLER_LEG].adv_contact;
 	if (store_dlg_value_unsafe(dlg, &caller_adv_ct,
 	                    &val, DLG_VAL_TYPE_STR) != 0) {
 		LM_ERR("failed to persist caller advertised Contact\n");
-		return -1;
+		goto error;
 	}
 
 	val.s = dlg->legs[dlg->legs_no[DLG_LEG_200OK]].in_sdp;
@@ -1435,7 +1445,7 @@ int persist_reinvite_pinging(struct dlg_cell *dlg)
 			store_dlg_value_unsafe(dlg, &callee_in_sdp,
 				&val, DLG_VAL_TYPE_STR) != 0) {
 		LM_ERR("failed to persist callee UAC SDP\n");
-		return -1;
+		goto error;
 	}
 
 	val.s = dlg->legs[dlg->legs_no[DLG_LEG_200OK]].out_sdp;
@@ -1443,17 +1453,22 @@ int persist_reinvite_pinging(struct dlg_cell *dlg)
 			store_dlg_value_unsafe(dlg, &callee_out_sdp,
 				&val, DLG_VAL_TYPE_STR) != 0) {
 		LM_ERR("failed to persist callee advertised SDP\n");
-		return -1;
+		goto error;
 	}
 
 	val.s = dlg->legs[dlg->legs_no[DLG_LEG_200OK]].adv_contact;
 	if (store_dlg_value_unsafe(dlg, &callee_adv_ct,
 	           &val, DLG_VAL_TYPE_STR) != 0) {
 		LM_ERR("failed to persist callee advertised Contact\n");
-		return -1;
+		goto error;
 	}
 
+	lock_stop_write(dlg->vals_lock);
 	return 0;
+
+error:
+	lock_stop_write(dlg->vals_lock);
+	return -1;
 }
 
 /* re-populate the SDPs/Contacts of caller/callee(s) from dlg val storage */
@@ -1574,7 +1589,7 @@ static inline void set_final_update_cols(db_val_t *vals, struct dlg_cell *cell,
 
 	/* save sharing tag name as dlg val */
 	val.s = cell->shtag;
-	if (cell->shtag.s && store_dlg_value_unsafe(cell, &shtag_dlg_val, &val,
+	if (cell->shtag.s && store_dlg_value(cell, &shtag_dlg_val, &val,
 		DLG_VAL_TYPE_STR) < 0)
 		LM_ERR("Failed to store sharing tag %.*s(%p) as dlg val\n",
 		       cell->shtag.len, cell->shtag.s, cell->shtag.s);
@@ -1583,7 +1598,7 @@ static inline void set_final_update_cols(db_val_t *vals, struct dlg_cell *cell,
 		if (cell->vals==NULL) {
 			VAL_NULL(vals) = 1;
 		} else {
-			s = write_dialog_vars( cell->vals );
+			s = write_dialog_vars( cell );
 			if (s==NULL) {
 				VAL_NULL(vals) = 1;
 			} else {
@@ -1624,7 +1639,7 @@ void dialog_update_db(unsigned int ticks, void *do_lock)
 	struct dlg_entry *entry;
 	struct dlg_cell  * cell,*next_cell;
 	unsigned char on_shutdown;
-	int callee_leg,ins_done=0;
+	int callee_leg, ins_done=0, reset_locked_by;
 	static query_list_t *ins_list = NULL;
 
 	db_key_t insert_keys[DIALOG_TABLE_TOTAL_COL_NO] = {
@@ -1682,9 +1697,11 @@ void dialog_update_db(unsigned int ticks, void *do_lock)
 						/* mark it as deleted so as we don't deal with it later */
 						cell->flags |= DLG_FLAG_DB_DELETED;
 						/* timer is done with this dialog */
+						reset_locked_by = (cell->ref > 1);
 						cell->locked_by = process_no;
 						unref_dlg_unsafe(cell,1,entry);
-						cell->locked_by = 0;
+						if (reset_locked_by)
+							cell->locked_by = 0;
 						cell=next_cell;
 						continue;
 					}
@@ -1726,7 +1743,7 @@ void dialog_update_db(unsigned int ticks, void *do_lock)
 					cell->legs[callee_leg].contact);
 
 				SET_INT_VALUE(values+15, cell->state);
-				SET_INT_VALUE(values+16, (unsigned int)((unsigned int)time(0)
+				SET_INT_VALUE(values+16, (unsigned int)((unsigned int)(unsigned long)time(0)
 					+ cell->tl.timeout - get_ticks()) );
 
 				SET_STR_VALUE(values+17, cell->legs[DLG_CALLER_LEG].r_cseq);
@@ -1783,7 +1800,7 @@ void dialog_update_db(unsigned int ticks, void *do_lock)
 				SET_STR_VALUE(values+14,
 					cell->legs[callee_leg].contact);
 				SET_INT_VALUE(values+15, cell->state);
-				SET_INT_VALUE(values+16, (unsigned int)((unsigned int)time(0)
+				SET_INT_VALUE(values+16, (unsigned int)((unsigned int)(unsigned long)time(0)
 					 + cell->tl.timeout - get_ticks()) );
 				SET_STR_VALUE(values+17, cell->legs[DLG_CALLER_LEG].r_cseq);
 				SET_STR_VALUE(values+18, cell->legs[callee_leg].r_cseq);
@@ -1859,7 +1876,7 @@ static int sync_dlg_db_mem(void)
 	int no_rows = 10;
 	unsigned int db_caller_cseq = 0, db_callee_cseq = 0;
 	unsigned int dlg_caller_cseq = 0, dlg_callee_cseq = 0;
-	struct socket_info *caller_sock,*callee_sock;
+	const struct socket_info *caller_sock,*callee_sock;
 	str callid, from_uri, to_uri, from_tag, to_tag;
 	str cseq1,cseq2,contact1,contact2,rroute1,rroute2,mangled_fu,mangled_tu;
 	unsigned int hash_entry, hash_id;
@@ -2030,10 +2047,10 @@ static int sync_dlg_db_mem(void)
 
 				/* calculate timeout */
 				dlg->tl.timeout = (unsigned int)(VAL_INT(values+8));
-				if (dlg->tl.timeout<=(unsigned int)time(0))
+				if (dlg->tl.timeout<=(unsigned int)(unsigned long)time(0))
 					dlg->tl.timeout = 0;
 				else
-					dlg->tl.timeout -= (unsigned int)time(0);
+					dlg->tl.timeout -= (unsigned int)(unsigned long)time(0);
 
 				/* restore the timer values */
 				if (0 != insert_dlg_timer( &(dlg->tl), (int)dlg->tl.timeout )) {
@@ -2114,10 +2131,10 @@ static int sync_dlg_db_mem(void)
 
 					/* play nice and store longest timeout, although not always correct*/
 					db_timeout = (unsigned int)(VAL_INT(values+8));
-					if (db_timeout<=(unsigned int)time(0))
+					if (db_timeout<=(unsigned int)(unsigned long)time(0))
 						db_timeout = 0;
 					else
-						db_timeout -= (unsigned int)time(0);
+						db_timeout -= (unsigned int)(unsigned long)time(0);
 					db_timeout += get_ticks();
 
 					if (known_dlg->tl.timeout < db_timeout)
@@ -2227,10 +2244,10 @@ static int sync_dlg_db_mem(void)
 
 					/* update timeout */
 					known_dlg->tl.timeout = (unsigned int)(VAL_INT(values+8));
-					if (known_dlg->tl.timeout<=(unsigned int)time(0))
+					if (known_dlg->tl.timeout<=(unsigned int)(unsigned long)time(0))
 						known_dlg->tl.timeout = 0;
 					else
-						known_dlg->tl.timeout -= (unsigned int)time(0);
+						known_dlg->tl.timeout -= (unsigned int)(unsigned long)time(0);
 					known_dlg->tl.timeout += get_ticks();
 
 					/* update cseqs */
@@ -2425,7 +2442,7 @@ static int restore_dlg_db(void)
 			SET_STR_VALUE(values+14,cell->legs[callee_leg].to_uri);
 
 			SET_INT_VALUE(values+15, cell->state);
-			SET_INT_VALUE(values+16, (unsigned int)((unsigned int)time(0)
+			SET_INT_VALUE(values+16, (unsigned int)((unsigned int)(unsigned long)time(0)
 				+ cell->tl.timeout - get_ticks()) );
 
 			SET_STR_VALUE(values+17, cell->legs[DLG_CALLER_LEG].r_cseq);
@@ -2499,4 +2516,3 @@ mi_response_t *mi_restore_dlg_db(const mi_params_t *params,
 	else
 		return init_mi_result_ok();
 }
-

@@ -53,10 +53,12 @@ static cachedb_con *cdbc = 0;
 
 static int blacklist_timeout=3600; /* seconds */
 static str cachedb_url = {0,0};
+static int min_ttl=0; /* seconds */
 
 static const param_export_t params[]={
 	{ "cachedb_url",                 STR_PARAM, &cachedb_url.s},
 	{ "blacklist_timeout",           INT_PARAM, &blacklist_timeout},
+	{ "min_ttl",                     INT_PARAM, &min_ttl},
 	{0,0,0}
 };
 
@@ -205,13 +207,15 @@ static char* serialize_he_rdata(struct hostent *he,int *buf_len,int do_encoding)
 	memcpy(p,&he->h_addrtype,sizeof(int));
 	p+=sizeof(int);
 
-	/* copy h_name len */
-	len=strlen(he->h_name)+1;
-	memcpy(p,&len,sizeof(int));
-	p+=sizeof(int);
-	/* copy h_name */
-	memcpy(p,he->h_name,len);
-	p+=len;
+	if (he->h_name) {
+		/* copy h_name len */
+		len=strlen(he->h_name)+1;
+		memcpy(p,&len,sizeof(int));
+		p+=sizeof(int);
+		/* copy h_name */
+		memcpy(p,he->h_name,len);
+		p+=len;
+	}
 
 	/* copy number of aliases */
 	memcpy(p,&alias_no,sizeof(int));
@@ -875,6 +879,10 @@ int put_dnscache_value(char *name,int r_type,void *record,int rdata_len,
 		}
 
 		key_ttl = ttl;
+
+		if (min_ttl > 0 && key_ttl < min_ttl) {
+			key_ttl = min_ttl;
+		}
 	}
 
 	LM_INFO("putting key [%.*s] with value [%.*s] ttl = %d\n",

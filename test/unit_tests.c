@@ -22,6 +22,7 @@
 
 #include <tap.h>
 
+#include "../db/test/test_db.h"
 #include "../cachedb/test/test_cachedb.h"
 #include "../lib/test/test_csv.h"
 #include "../lib/test/test_digest_auth.h"
@@ -42,7 +43,7 @@
 void init_unit_tests(void)
 {
 	if (!strcmp(testing_module, "core")) {
-		set_mpath("modules/");
+		add_mpath("modules/");
 		solve_module_dependencies(modules);
 		init_cachedb_tests();
 		//init_malloc_tests();
@@ -67,6 +68,7 @@ int run_unit_tests(void)
 		test_parser();
 		test_ut();
 		test_lib_digest_auth();
+		test_db();
 
 	/* module tests */
 	} else {

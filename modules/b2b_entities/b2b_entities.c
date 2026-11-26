@@ -101,6 +101,7 @@ static const cmd_export_t cmds[] = {
 		{CMD_PARAM_VAR|CMD_PARAM_OPT, 0, 0},
 		{CMD_PARAM_STR|CMD_PARAM_OPT|CMD_PARAM_FIX_NULL,
 			fixup_ua_flags, fixup_free_ua_flags},
+		{CMD_PARAM_STR|CMD_PARAM_OPT, 0, 0},
 		{0,0,0}},
 		REQUEST_ROUTE},
 	{"ua_session_update", (cmd_function)b2b_ua_update, {
@@ -628,6 +629,7 @@ static void mod_destroy(void)
 			} else {
 				b2b_entities_dump(1);
 				b2be_dbf.close(b2be_db);
+				b2be_db = NULL;
 			}
 		} else if (b2be_cdbf.init) {
 			b2be_cdb = b2be_cdbf.init(&b2be_cdb_url);
@@ -636,6 +638,7 @@ static void mod_destroy(void)
 			} else {
 				b2b_entities_dump(1);
 				b2be_cdbf.destroy(b2be_cdb);
+				b2be_cdb = NULL;
 			}
 		}
 	}

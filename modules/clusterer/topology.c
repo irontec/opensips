@@ -28,11 +28,12 @@
 
 extern int ping_interval;
 extern int node_timeout;
-extern int ping_timeout;
+extern long ping_timeout_us, ping_interval_us;
+extern int clusterer_enable_rerouting;
 
 #define PING_REPLY_INTERVAL(_node) \
-	((_node)->last_ping.tv_sec*1000000 + (_node)->last_ping.tv_usec \
-	- (_node)->last_pong.tv_sec*1000000 - (_node)->last_pong.tv_usec)
+	((_node)->last_pong.tv_sec*1000000 + (_node)->last_pong.tv_usec \
+	- (_node)->last_ping.tv_sec*1000000 - (_node)->last_ping.tv_usec)
 
 static int send_ping(node_info_t *node, int req_node_list)
 {
@@ -184,7 +185,7 @@ static void do_action_trans_5(node_info_t *node, int *link_state_to_set,
 void heartbeats_timer(void)
 {
 	struct timeval now;
-	time_t last_ping_int, ping_reply_int;
+	time_t last_ping_int, last_sent_int, ping_reply_int;
 	cluster_info_t *clusters_it;
 	node_info_t *node;
 	int ev_actions_required[MAX_NO_CLUSTERS] = {0};
@@ -212,6 +213,7 @@ void heartbeats_timer(void)
 			gettimeofday(&now, NULL);
 			ping_reply_int = PING_REPLY_INTERVAL(node);
 			last_ping_int = TIME_DIFF(node->last_ping, now);
+			last_sent_int = TIME_DIFF(node->last_sent, now);
 
 			prev_ls = -1;
 			new_ls = -1;
@@ -224,7 +226,7 @@ void heartbeats_timer(void)
 				/* restart pinging sequence */
 				do_action_trans_0(node, &new_ls);
 			} else if (node->link_state == LS_RETRY_SEND_FAIL &&
-				last_ping_int >= (utime_t)ping_timeout*1000) {
+				last_ping_int >= (time_t)ping_timeout_us) {
 				CL_DBG("case 1: RETRY_SEND_FAIL and timeout\n");
 				prev_ls = node->link_state;
 				lock_release(node->lock);
@@ -232,8 +234,13 @@ void heartbeats_timer(void)
 				/* failed to send previous ping, retry */
 				do_action_trans_1(node, &new_ls);
 			} else if ((node->link_state == LS_UP || node->link_state == LS_RESTARTED) &&
-				(ping_reply_int >= (time_t)ping_timeout*1000) &&
-				last_ping_int >= (utime_t)ping_timeout*1000) {
+					/* have yet to receive a ping reply, or it was unacceptably slow */
+				(ping_reply_int <= 0 || ping_reply_int >= (time_t)ping_timeout_us) &&
+					/* ... and we're pinging or haven't sent a recent BIN packet */
+				(node->link_state == LS_RESTARTED
+				     || last_sent_int >= (time_t)ping_timeout_us) &&
+					/* ... and a new ping packet is due */
+				last_ping_int >= (time_t)ping_timeout_us) {
 				CL_DBG("case 2: LS_UP and timeout\n");
 				prev_ls = -2;
 				lock_release(node->lock);
@@ -242,8 +249,8 @@ void heartbeats_timer(void)
 				do_action_trans_2(node, &new_ls);
 				ev_actions_required[no_clusters] = 1;
 			} else if (node->link_state == LS_RETRYING &&
-				(ping_reply_int >= (time_t)ping_timeout*1000) &&
-				last_ping_int >= (utime_t)ping_timeout*1000) {
+				(ping_reply_int <= 0 || ping_reply_int >= (time_t)ping_timeout_us) &&
+				last_ping_int >= (time_t)ping_timeout_us) {
 				CL_DBG("case 3: LS_RETRYING and timeout\n");
 				prev_ls = node->link_state;
 				lock_release(node->lock);
@@ -251,7 +258,7 @@ void heartbeats_timer(void)
 				/* previous ping retry not replied, continue to retry */
 				do_action_trans_3(node, &new_ls);
 			} else if (node->link_state == LS_DOWN &&
-				last_ping_int >= (utime_t)node_timeout*1000000) {
+				last_ping_int >= (time_t)node_timeout*1000000) {
 				CL_DBG("case 4: LS_DOWN and timeout\n");
 				prev_ls = node->link_state;
 				lock_release(node->lock);
@@ -259,7 +266,8 @@ void heartbeats_timer(void)
 				/* ping a failed node after node_timeout since last ping */
 				do_action_trans_4(node, &new_ls);
 			} else if (node->link_state == LS_UP &&
-				last_ping_int >= (utime_t)ping_interval*1000000) {
+				    last_sent_int >= (time_t)ping_interval_us &&
+				    last_ping_int >= (time_t)ping_interval_us) {
 				CL_DBG("case 5: LS_UP and timeout\n");
 				prev_ls = node->link_state;
 				lock_release(node->lock);
@@ -321,12 +329,16 @@ node_info_t *get_next_hop_2(node_info_t *dest)
 {
 	node_info_t *n, *next_hop;
 	struct node_search_info *queue_front;
-    struct node_search_info *root, *curr;
-    struct neighbour *neigh;
+	struct node_search_info *root, *curr;
+	struct neighbour *neigh;
 
-    lock_get(dest->cluster->lock);
+	if (clusterer_enable_rerouting == 0) {
+		return NULL;
+	}
 
-    /* run BFS */
+	lock_get(dest->cluster->lock);
+
+	/* run BFS */
 	if (dest->cluster->top_version != dest->sp_top_version) {
 		lock_get(dest->lock);
 		dest->next_hop = NULL;
@@ -405,6 +417,10 @@ node_info_t *get_next_hop_2(node_info_t *dest)
 int get_next_hop(node_info_t *dest)
 {
 	node_info_t *nhop;
+
+	if (clusterer_enable_rerouting == 0) {
+		return 0;
+	}
 
 	lock_get(dest->lock);
 
@@ -536,7 +552,7 @@ static int send_full_top_update(node_info_t *dest_node, int nr_nodes, int *node_
 	int timestamp;
 	int i;
 
-	timestamp = time(NULL);
+	timestamp = (int)(unsigned long)time(NULL);
 
 	lock_get(dest_node->cluster->current_node->lock);
 
@@ -629,7 +645,7 @@ static int send_ls_update(node_info_t *node, clusterer_link_state new_ls)
 	bin_packet_t packet;
 	int timestamp;
 
-	timestamp = time(NULL);
+	timestamp = (int)(unsigned long)time(NULL);
 
 	lock_get(node->cluster->current_node->lock);
 
@@ -917,7 +933,9 @@ int set_link_w_neigh(clusterer_link_state new_ls, node_info_t *neigh)
 			check_node_events(neigh, CLUSTER_NODE_UP);
 			lock_get(neigh->lock);
 		}
-		neigh->next_hop = neigh;
+		if (clusterer_enable_rerouting) {
+			neigh->next_hop = neigh;
+		}
 
 	}
 
@@ -992,6 +1010,12 @@ void handle_full_top_update(bin_packet_t *packet, node_info_t *source,
 
 	bin_pop_int(packet, &no_nodes);
 
+	if (no_nodes < 0 || no_nodes > MAX_NO_NODES) {
+		LM_WARN("Invalid number of nodes [%d] in topology update from node [%d]\n",
+			no_nodes, source->node_id);
+		return;
+	}
+
 	for (i = 0; i < no_nodes; i++) {
 		bin_pop_int(packet, &top_node_id[i]);		/* node id */
 
@@ -1006,6 +1030,12 @@ void handle_full_top_update(bin_packet_t *packet, node_info_t *source,
 		bin_pop_int(packet, &top_node_info[i][1]);  /* ls_seq_no */
 		bin_pop_int(packet, &top_node_info[i][2]);  /* ls_timestamp */
 		bin_pop_int(packet, &top_node_info[i][3]);  /* no_neigh */
+
+		if (top_node_info[i][3] < 0 || top_node_info[i][3] > MAX_NO_NODES) {
+			LM_WARN("Invalid number of neighbours [%d] for node [%d] in topology update from node [%d]\n",
+				top_node_info[i][3], top_node_id[i], source->node_id);
+			return;
+		}
 
 		for (j = 0; j < top_node_info[i][3]; j++)
 			bin_pop_int(packet, &top_node_info[i][j+4]);  /* neighbor id */
@@ -1059,6 +1089,7 @@ void handle_full_top_update(bin_packet_t *packet, node_info_t *source,
 
 		lock_release(top_node->lock);
 
+		no_present_nodes = 0;
 		for (j = 0; j < top_node_info[i][3]; j++) {
 			top_neigh = get_node_by_id(source->cluster, top_node_info[i][j+4]);
 			if (!top_neigh && top_node_info[i][j+4] != current_id) {
@@ -1346,15 +1377,25 @@ void handle_ping(bin_packet_t *received, node_info_t *src_node,
 void handle_pong(bin_packet_t *received, node_info_t *src_node,
 	struct timeval rcv_time, int *ev_actions_required)
 {
+	time_t last_recv_int;
 	int node_list[MAX_NO_NODES], i, nr_nodes;
 
 	bin_pop_int(received, &nr_nodes);
+	if (nr_nodes < 0 || nr_nodes > MAX_NO_NODES) {
+		LM_WARN("Invalid number of nodes [%d] in pong from node [%d]\n",
+			nr_nodes, src_node->node_id);
+		return;
+	}
+
 	for (i=0; i<nr_nodes; i++)
 		bin_pop_int(received, &node_list[i]);
+
+	last_recv_int = TIME_DIFF(src_node->last_recv, rcv_time);
 
 	lock_get(src_node->lock);
 
 	src_node->last_pong = rcv_time;
+	src_node->last_recv = rcv_time;
 
 	/* check possible races between setting the appropriate state
 	 * after sending ping and receiving the reply */
@@ -1362,13 +1403,19 @@ void handle_pong(bin_packet_t *received, node_info_t *src_node,
 		src_node->link_state == LS_RETRY_SEND_FAIL ||
 		src_node->link_state == LS_DOWN) &&
 		src_node->last_ping_state == 0 &&
-		TIME_DIFF(src_node->last_ping, rcv_time) < (utime_t)ping_timeout*1000)
+		TIME_DIFF(src_node->last_ping, rcv_time) < (time_t)ping_timeout_us)
 		src_node->link_state = LS_TEMP;
 
 	/* if the node was retried and a reply was expected, it should be UP again */
-	if (src_node->link_state == LS_RESTARTED ||
+	if ((src_node->link_state == LS_RESTARTED ||
 		src_node->link_state == LS_RETRYING ||
-		src_node->link_state == LS_TEMP) {
+               src_node->link_state == LS_TEMP) &&
+			/* if either this PONG wasn't too late or we received
+			 *    *any* other type of BIN packet in the mean time */
+            ((PING_REPLY_INTERVAL(src_node) > 0 &&
+            PING_REPLY_INTERVAL(src_node) < (time_t)ping_timeout_us)
+			 || last_recv_int <= 0 || last_recv_int < (time_t)ping_timeout_us)) {
+
 		lock_release(src_node->lock);
 
 		set_link_w_neigh_up(src_node, nr_nodes, node_list);

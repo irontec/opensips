@@ -214,13 +214,13 @@ error:
  *  -3 - internal error
  */
 int msrp_fwd_request( void *hdl, struct msrp_msg *req, str *hdrs, int hdrs_no,
-	struct socket_info *sock, union sockaddr_union *to_su, void *trans_param)
+	const struct socket_info *sock, union sockaddr_union *to_su, void *trans_param)
 {
 	char *buf, *p, *s, bk;
 	struct msrp_url *to, *from;
 	union sockaddr_union su;
 	struct hostent* he;
-	int i, len, hash = 0, idx = 0;
+	int i, len, copy_len, hash = 0, idx = 0;
 	char md5[MD5_LEN];
 	str ident, md5_src[3];
 	struct msrp_cell *cell = NULL;
@@ -284,13 +284,14 @@ int msrp_fwd_request( void *hdl, struct msrp_msg *req, str *hdrs, int hdrs_no,
 	(to->next->secured?1:0)^(req->rcv.bind_address->proto==PROTO_MSRPS?1:0)) {
 		/* IN and OUT are different from the "secured" perspective, so
 		 * pick the first socket matching the outbound proto */
-		sock = protos[to->next->secured?PROTO_MSRPS:PROTO_MSRP].listeners;
-		if (sock==NULL) {
+		struct socket_info_full **_s = get_sock_info_list(to->next->secured?PROTO_MSRPS:PROTO_MSRP);
+		if (_s==NULL || _s[0]==NULL) {
 			LM_ERR("cannot find outbound interface - the URL requires %s, but"
 				" not such sockets are defined\n",
 				to->next->secured?"MSRPS":"MSRP");
 			return -2;
 		}
+		sock = &_s[0]->socket_info;
 	} else {
 		sock = req->rcv.bind_address;
 	}
@@ -354,7 +355,12 @@ redo_ident:
 	append_string( p, s, (int)(to->whole.s-s));
 	/* copy starting with the second URL, all the way to the first FROM URL */
 	s = to->next->whole.s;
-	append_string( p, s, (int)(from->whole.s-s));
+	if (from->whole.s < s) {
+		LM_ERR("invalid header order: From-Path before To-Path\n");
+		goto error;
+	}
+	copy_len = (int)(from->whole.s - s);
+	append_string( p, s, copy_len);
 	/* first place here the first TO URL that was skipped */
 	append_string( p, to->whole.s, to->whole.len);
 	*(p++) = ' ';
@@ -455,7 +461,7 @@ int msrp_fwd_reply( void *hdl, struct msrp_msg *rpl, struct msrp_cell *cell)
 {
 	char *buf, *p, *s;
 	struct msrp_url *to, *from;
-	int i, len;
+	int i, len, copy_len;
 
 	if (rpl==NULL || cell==NULL)
 		return -1;
@@ -506,7 +512,12 @@ int msrp_fwd_reply( void *hdl, struct msrp_msg *rpl, struct msrp_cell *cell)
 	append_string( p, s, (int)(to->whole.s-s));
 	/* copy starting with the second URL, all the way to the first FROM URL */
 	s = to->next->whole.s;
-	append_string( p, s, (int)(from->whole.s-s));
+	if (from->whole.s < s) {
+		LM_ERR("invalid header order: From-Path before To-Path\n");
+		goto error;
+	}
+	copy_len = (int)(from->whole.s - s);
+	append_string( p, s, copy_len);
 	/* first place here the first TO URL that was skipped */
 	append_string( p, to->whole.s, to->whole.len);
 	*(p++) = ' ';
@@ -810,7 +821,7 @@ error:
 
 int msrp_send_request(void *hdl, enum msrp_method method_id,
 		str *from, struct msrp_url *to,
-		struct socket_info *sock, union sockaddr_union *to_su,
+		const struct socket_info *sock, union sockaddr_union *to_su,
 		str *mime, str *body,
 		str *hdrs, int hdrs_no, char cont_flag,
 		void *trans_param)
@@ -889,13 +900,14 @@ int msrp_send_request(void *hdl, enum msrp_method method_id,
 		}
 	} else {
 		 /* just pick the first socket matching the outbound proto */
-		sock = protos[to->secured?PROTO_MSRPS:PROTO_MSRP].listeners;
-		if (sock==NULL) {
+		struct socket_info_full **_s = get_sock_info_list(to->secured?PROTO_MSRPS:PROTO_MSRP);
+		if (_s==NULL || _s[0]==NULL) {
 			LM_ERR("cannot find outbound interface - the URL requires %s, but"
 				" not such sockets are defined\n",
 				to->secured?"MSRPS":"MSRP");
 			return -2;
 		}
+		sock = &_s[0]->socket_info;
 	}
 
 

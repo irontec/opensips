@@ -91,7 +91,7 @@ static void cgr_conn_schedule(struct cgr_conn *c)
 
 #else /* HAVE_TIMER_FD */
 #warning Your GLIB is too old, disabling cgrates async re-connect!!!
-#define cgr_conn_schedule()
+#define cgr_conn_schedule(...)
 #endif /* HAVE_TIMER_FD */
 
 void cgrc_conn_rpc(int sender, void *p)
@@ -271,7 +271,7 @@ static int cgrc_conn(struct cgr_conn *c)
 
 	tcp_con_get_profile(&c->engine->su, src_su, PROTO_TCP, &prof);
 
-	s = tcp_sync_connect_fd(src_su, &c->engine->su, PROTO_TCP, &prof, 0);
+	s = tcp_sync_connect_fd(src_su, &c->engine->su, PROTO_TCP, &prof, 0, 0);
 	if (s < 0) {
 		LM_ERR("cannot connect to %.*s:%d\n", c->engine->host.len,
 				c->engine->host.s, c->engine->port);

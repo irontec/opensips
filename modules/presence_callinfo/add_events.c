@@ -215,7 +215,7 @@ int do_callinfo_publish(struct sca_line *sca)
 			presentity.old_etag   = etag;
 		presentity.event  = callinfo_event;
 		presentity.expires = callinfo_event->default_expires;
-		presentity.received_time= (int)time(NULL);
+		presentity.received_time=time(NULL);
 		presentity.extra_hdrs = &ci_hdr;
 		presentity.etag_new = new_etag;
 		if ( pres.update_presentity( &presentity )<0 )
@@ -314,7 +314,7 @@ int lineseize_subs_handl(struct sip_msg* msg, struct subscription *subs, int *re
 		/* new SUBSCRIBE */
 		if (sca->seize_state!=0) {
 			/* already in seizing from a different subscrine */
-			if (sca->seize_expires < get_ticks()) {
+			if (sca->seize_expires > get_ticks()) {
 				/* old seizing still valid -> reject it */
 				*reply_code = 480;
 				reply_reason->s = "Temporarily Unavailable";

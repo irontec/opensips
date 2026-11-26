@@ -91,9 +91,10 @@ Options:\n\
                   auto-probing procedure even if  OS allows\n\
     -a allocator The memory allocator to use for all memory segments\n\
                   Possible values: \n\
-                      F_MALLOC    F_MALLOC_DBG\n\
-                      Q_MALLOC    Q_MALLOC_DBG\n\
-                      HP_MALLOC   HP_MALLOC_DBG\n\
+                      F_MALLOC            F_MALLOC_DBG\n\
+                      F_PARALLEL_MALLOC   F_PARALLEL_MALLOC_DBG\n\
+                      Q_MALLOC            Q_MALLOC_DBG\n\
+                      HP_MALLOC           HP_MALLOC_DBG\n\
     -k allocator The pkg memory allocator to use (overrides -a)\n\
     -s allocator The shared memory allocator to use (overrides -a)\n\
     -e allocator The restart-persistent memory allocator to use (overrides -a)\n\
@@ -108,7 +109,8 @@ Options:\n\
                   shall receive input via stdin and it must output the\n\
                   result to stdout\n\
     -P file      Create a pid file\n\
-    -G file      Create a pgid file\n"
+    -G file      Create a pgid file\n\
+    -A address   Set the globally advertised addres\n"
 #ifdef UNIT_TESTS
 "    -T           Fork, run unit tests and exit.\n"
 #endif

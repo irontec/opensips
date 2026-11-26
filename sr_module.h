@@ -108,6 +108,8 @@ typedef int (*mod_proc_wrapper)();
 #define PROC_FLAG_HAS_IPC      (1<<1)
 #define PROC_FLAG_NEEDS_SCRIPT (1<<2)
 
+#define MOD_WARN_EXIT		   (1<<1)
+#define MOD_WARN_SKIP		   (1<<2)
 
 struct param_export_ {
 	const char* name;       /*!< null terminated param. name */
@@ -142,6 +144,9 @@ struct sr_module{
 
 	/* modules which must be initialized before this module */
 	struct sr_module_dep *sr_deps_init;
+
+	/* modules which childs must be initialized before this module */
+	struct sr_module_dep *sr_deps_cinit;
 
 	/* modules which must be destroyed before this module */
 	struct sr_module_dep *sr_deps_destroy;
@@ -201,7 +206,7 @@ struct module_exports{
 	                                    module agrees with the new script */
 };
 
-void set_mpath(const char *new_mpath);
+void add_mpath(const char *new_mpath);
 
 extern struct sr_module* modules; /*!< global module list*/
 

@@ -52,8 +52,8 @@
 static int mod_init(void);
 static int proto_tcp_init(struct proto_info *pi);
 static int proto_tcp_init_listener(struct socket_info *si);
-static int proto_tcp_send(struct socket_info* send_sock,
-		char* buf, unsigned int len, union sockaddr_union* to,
+static int proto_tcp_send(const struct socket_info* send_sock,
+		char* buf, unsigned int len, const union sockaddr_union* to,
 		unsigned int id);
 inline static int _tcp_write_on_socket(struct tcp_connection *c, int fd,
 		char *buf, int len);
@@ -203,12 +203,13 @@ static int proto_tcp_init(struct proto_info *pi)
 	pi->default_port		= tcp_port;
 
 	pi->tran.init_listener	= proto_tcp_init_listener;
+	pi->tran.bind_listener	= tcp_bind_listener;
 	pi->tran.send			= proto_tcp_send;
 	pi->tran.dst_attr		= tcp_conn_fcntl;
 
 	pi->net.flags			= PROTO_NET_USE_TCP;
-	pi->net.read			= (proto_net_read_f)tcp_read_req;
-	pi->net.write			= (proto_net_write_f)tcp_async_write;
+	pi->net.stream.read		= tcp_read_req;
+	pi->net.stream.write		= tcp_async_write;
 	pi->net.report			= tcp_report;
 
 	if (tcp_async && !tcp_has_async_write()) {
@@ -223,7 +224,7 @@ static int proto_tcp_init(struct proto_info *pi)
 		 * if the tcp_async is enbled */
 		if (tcp_async_max_postponed_chunks<=1)
 			tcp_async_max_postponed_chunks = 2;
-		pi->net.async_chunks= tcp_async_max_postponed_chunks;
+		pi->net.stream.async_chunks= tcp_async_max_postponed_chunks;
 	}
 
 	return 0;
@@ -360,9 +361,9 @@ inline static int _tcp_write_on_socket(struct tcp_connection *c, int fd,
 
 
 /*! \brief Finds a tcpconn & sends on it */
-static int proto_tcp_send(struct socket_info* send_sock,
+static int proto_tcp_send(const struct socket_info* send_sock,
 									char* buf, unsigned int len,
-									union sockaddr_union* to, unsigned int id)
+									const union sockaddr_union* to, unsigned int id)
 {
 	struct tcp_connection *c;
 	struct tcp_conn_profile prof;
@@ -442,14 +443,14 @@ static int proto_tcp_send(struct socket_info* send_sock,
 
 				/* mark the ID of the used connection (tracing purposes) */
 				last_outgoing_tcp_id = c->id;
-				send_sock->last_local_real_port = c->rcv.dst_port;
-				send_sock->last_remote_real_port = c->rcv.src_port;
+				send_sock->last_real_ports->local = c->rcv.dst_port;
+				send_sock->last_real_ports->remote = c->rcv.src_port;
 
 				/* connect is still in progress, break the sending
 				 * flow now (the actual write will be done when
 				 * connect will be completed */
 				LM_DBG("Successfully started async connection \n");
-				sh_log(c->hist, TCP_SEND2MAIN, "send 1, (%d)", c->refcnt);
+				sh_log(c->hist, TCP_RELEASED, "send 1, (%d)", c->refcnt);
 				tcp_conn_release(c, 0);
 				return len;
 			}
@@ -525,23 +526,25 @@ static int proto_tcp_send(struct socket_info* send_sock,
 				LM_ERR("Failed to add another write chunk to %p\n",c);
 				/* we failed due to internal errors - put the
 				 * connection back */
-				sh_log(c->hist, TCP_SEND2MAIN, "send 2, (%d)", c->refcnt);
+				sh_log(c->hist, TCP_RELEASED, "send 2, (%d)", c->refcnt);
 				tcp_conn_release(c, 0);
 				return -1;
 			}
 
 			/* mark the ID of the used connection (tracing purposes) */
 			last_outgoing_tcp_id = c->id;
-			send_sock->last_local_real_port = c->rcv.dst_port;
-			send_sock->last_remote_real_port = c->rcv.src_port;
+			send_sock->last_real_ports->local = c->rcv.dst_port;
+			send_sock->last_real_ports->remote = c->rcv.src_port;
 
 			/* we successfully added our write chunk - success */
-			sh_log(c->hist, TCP_SEND2MAIN, "send 3, (%d)", c->refcnt);
+			sh_log(c->hist, TCP_RELEASED, "send 3, (%d)", c->refcnt);
 			tcp_conn_release(c, 0);
 			return len;
 		} else {
-			/* return error, nothing to do about it */
-			sh_log(c->hist, TCP_SEND2MAIN, "send 4, (%d)", c->refcnt);
+			/* the FD transfer failed (we have an established conn, 
+			 * but returned fd is -1) -> leave the conn alone, return error
+			 * for the write op, nothing to do about it */
+			sh_log(c->hist, TCP_RELEASED, "send 4, (%d)", c->refcnt);
 			tcp_conn_release(c, 0);
 			return -1;
 		}
@@ -564,12 +567,12 @@ send_it:
 	LM_DBG("after write: c= %p n/len=%d/%d fd=%d\n",c, n, len, fd);
 	/* LM_DBG("buf=\n%.*s\n", (int)len, buf); */
 	if (n<0){
-		LM_ERR("failed to send\n");
+		LM_ERR("failed to send on conn %p / %u\n", c, c->id);
 		c->state=S_CONN_BAD;
 		if (c->proc_id != process_no)
 			close(fd);
 
-		sh_log(c->hist, TCP_SEND2MAIN, "send 5, (%d)", c->refcnt);
+		sh_log(c->hist, TCP_RELEASED, "send 5, (%d)", c->refcnt);
 		tcp_conn_release(c, 0);
 		return -1;
 	}
@@ -581,10 +584,11 @@ send_it:
 
 	/* mark the ID of the used connection (tracing purposes) */
 	last_outgoing_tcp_id = c->id;
-	send_sock->last_local_real_port = c->rcv.dst_port;
-	send_sock->last_remote_real_port = c->rcv.src_port;
+	send_sock->last_real_ports->local = c->rcv.dst_port;
+	send_sock->last_real_ports->remote = c->rcv.src_port;
 
-	sh_log(c->hist, TCP_SEND2MAIN, "send 6, (%d, async: %d)", c->refcnt, n < len);
+	if (n==len)
+		sh_log(c->hist, TCP_RELEASED, "send 6, (%d, async: %d)", c->refcnt, n < len);
 	tcp_conn_release(c, (n<len)?1:0/*pending data in async mode?*/ );
 	return n;
 }

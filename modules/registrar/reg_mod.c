@@ -87,6 +87,7 @@ static int save_flags_fixup(void** param);
 static int save_flags_fixup_free(void** param);
 static int lookup_flags_fixup(void** param);
 static int lookup_flags_fixup_free(void** param);
+static int bflag_fixup(void** param);
 
 /*! \brief Functions */
 static int add_sock_hdr(struct sip_msg* msg, str *str);
@@ -134,7 +135,15 @@ stat_var *accepted_registrations;
 stat_var *rejected_registrations;
 stat_var *max_expires_stat;
 stat_var *max_contacts_stat;
-stat_var *default_expire_stat;
+stat_var *default_expires_stat;
+
+/* the "default_expire" statistic is kept under its old, misspelled name for
+ * backwards-compatibility; reading it through a function rather than a second
+ * stat_var keeps one source of truth, so the two names cannot drift apart */
+static unsigned long get_default_expire(void *foo)
+{
+	return (unsigned long)default_expires;
+}
 
 /** SIGNALING binds */
 struct sig_binds sigb;
@@ -154,7 +163,8 @@ static const cmd_export_t cmds[] = {
 		{CMD_PARAM_STR, 0, 0},
 		{CMD_PARAM_STR|CMD_PARAM_OPT,0,0},
 		{CMD_PARAM_STR|CMD_PARAM_OPT,0,0},
-		{CMD_PARAM_STR|CMD_PARAM_OPT,0,0}, {0,0,0}},
+		{CMD_PARAM_STR|CMD_PARAM_OPT,0,0},
+		{CMD_PARAM_STR|CMD_PARAM_OPT, bflag_fixup,0}, {0,0,0}},
 		REQUEST_ROUTE|ONREPLY_ROUTE},
 	{"remove_ip_port", (cmd_function)_remove_ip_port, {
 		{CMD_PARAM_STR, 0, 0},
@@ -228,7 +238,9 @@ static const param_export_t params[] = {
 static const stat_export_t mod_stats[] = {
 	{"max_expires",       STAT_NO_RESET, &max_expires_stat        },
 	{"max_contacts",      STAT_NO_RESET, &max_contacts_stat       },
-	{"default_expire",    STAT_NO_RESET, &default_expire_stat     },
+	{"default_expires",   STAT_NO_RESET, &default_expires_stat    },
+	/* kept for backwards-compatibility */
+	{"default_expire",    STAT_IS_FUNC,  (stat_var**)get_default_expire },
 	{"accepted_regs",                 0, &accepted_registrations  },
 	{"rejected_regs",                 0, &rejected_registrations  },
 	{0, 0, 0}
@@ -400,7 +412,7 @@ static int child_init(int rank)
 		/* init stats */
 		update_stat( max_expires_stat, max_expires );
 		update_stat( max_contacts_stat, max_contacts );
-		update_stat( default_expire_stat, default_expires );
+		update_stat( default_expires_stat, default_expires );
 	}
 
 	return 0;
@@ -428,6 +440,21 @@ static int domain_fixup(void** param)
 	*param = (void*)d;
 	return 0;
 }
+
+
+static int bflag_fixup(void** param)
+{
+	unsigned int mask;
+
+	if ((mask=fixup_flag( FLAG_TYPE_BRANCH, (str*)*param))==NAMED_FLAG_ERROR)
+		return E_UNSPEC;
+
+	*param = (void*)(unsigned long)mask;
+
+	return 0;
+}
+
+
 
 static int save_flags_fixup(void **param)
 {
@@ -469,7 +496,7 @@ static void mod_destroy(void)
 
 static int add_sock_hdr(struct sip_msg* msg, str *hdr_name)
 {
-	struct socket_info* si;
+	const struct socket_info* si;
 	struct lump* anchor;
 	str hdr;
 	char *p;

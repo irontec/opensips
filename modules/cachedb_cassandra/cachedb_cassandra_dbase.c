@@ -138,12 +138,15 @@ int cassandra_reopen(cassandra_con *cass_con)
 	return 0;
 }
 
-int cassandra_new_connection(cassandra_con *con, char *host, int port)
+int cassandra_new_connection(cassandra_con *con, char *host, int port, char *username, char *password)
 {
 	con->cluster = cass_cluster_new();
 	if (!con->cluster) {
 		LM_ERR("Failed to create Cassandra Cluster object\n");
 		return -1;
+	}
+	if (username && password) {
+	  cass_cluster_set_credentials(con->cluster, username, password);
 	}
 
 #if CASS_VERSION_MAJOR >= 2 && CASS_VERSION_MINOR >= 15
@@ -256,7 +259,7 @@ void *cassandra_init_connection(struct cachedb_id *id)
 	con->table = table;
 	con->cnt_table = cnt_table;
 
-	if (cassandra_new_connection(con, id->host, id->port) < 0) {
+	if (cassandra_new_connection(con, id->host, id->port, id->username, id->password) < 0) {
 		LM_ERR("failed to create new connection to Cassandra\n");
 		pkg_free(con);
 		return NULL;

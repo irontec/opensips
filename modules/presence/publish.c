@@ -219,7 +219,7 @@ void msg_presentity_clean(unsigned int ticks,void *interval)
 	db_ops[1] = OP_LT;
 	db_vals[1].type = DB_INT;
 	db_vals[1].nul = 0;
-	db_vals[1].val.int_val = (int)time(NULL) -10;
+	db_vals[1].val.int_val = (int)(unsigned long)time(NULL) -10;
 
 	last_expire_check = db_vals[1].val.int_val - 1;
 
@@ -359,9 +359,6 @@ void msg_presentity_clean(unsigned int ticks,void *interval)
 		}
 	}
 
-	if(result)
-		pa_dbf.free_result(pa_db, result);
-
 	/* now remove the expired records from DB ; just to be sure
 	 * that the presentity was handled (as expired) on all presence 
 	 * servers (if DB is shared), remove from only presentities older
@@ -424,6 +421,7 @@ int handle_publish(struct sip_msg* msg, str* sender_uri)
 	int reply_code;
 	str reply_str;
 	int sent_reply= 0;
+	int content_type;
 	char* sphere= NULL;
 
 	reply_code= 400;
@@ -547,10 +545,18 @@ int handle_publish(struct sip_msg* msg, str* sender_uri)
 				goto error;
 			}
 
-			if(sphere_enable && event->evp->parsed == EVENT_PRESENCE &&
-				get_content_type(msg)== SUBTYPE_PIDFXML)
-			{
-				sphere= extract_sphere(body);
+			if(sphere_enable && event->evp->parsed == EVENT_PRESENCE) {
+				content_type = parse_content_type_hdr(msg);
+				if (content_type < 0) {
+					LM_ERR("cannot parse content type\n");
+					goto error;
+				}
+				if (content_type == 0) {
+					LM_ERR("Content-Type header not found\n");
+					goto error;
+				}
+				if(content_type == (TYPE_APPLICATION << 16 | SUBTYPE_PIDFXML))
+					sphere= extract_sphere(body);
 			}
 		}
 	}
@@ -603,7 +609,7 @@ int handle_publish(struct sip_msg* msg, str* sender_uri)
 		presentity.sender= sender;
 	presentity.event= event;
 	presentity.expires = lexpire;
-	presentity.received_time= (int)time(NULL);
+	presentity.received_time= (int)(unsigned long)time(NULL);
 	if(extra_hdrs.s)
 		presentity.extra_hdrs = &extra_hdrs;
 	presentity.etag_new = etag_new;

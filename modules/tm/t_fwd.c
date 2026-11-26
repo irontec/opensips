@@ -51,6 +51,7 @@
 #include "../../mem/mem.h"
 #include "../../parser/parser_f.h"
 #include "../../parser/parse_body.h"
+#include "../../context.h"
 #include "t_funcs.h"
 #include "t_hooks.h"
 #include "t_msgbuilder.h"
@@ -58,6 +59,7 @@
 #include "t_cancel.h"
 #include "t_lookup.h"
 #include "t_fwd.h"
+#include "t_reply.h"
 #include "fix_lumps.h"
 #include "config.h"
 #include "cluster.h"
@@ -81,11 +83,7 @@ void t_on_branch( struct script_route_ref *ref )
 	 * created; if not -> use the static variable */
 	holder = (!t || t==T_UNDEFINED ) ? &goto_on_branch : &t->on_branch ;
 
-	/* if something already set, free it first */
-	if (*holder)
-		shm_free( *holder );
-
-	*holder = ref ? dup_ref_script_route_in_shm( ref, 0) : NULL;
+	tm_set_script_route_ref( t, holder, ref );
 }
 
 
@@ -235,7 +233,7 @@ error:
 
 /* be aware and use it *all* the time between pre_* and post_* functions! */
 static inline char *print_uac_request(struct sip_msg *i_req, unsigned int *len,
-		struct socket_info *send_sock, enum sip_protos proto )
+		const struct socket_info *send_sock, enum sip_protos proto )
 {
 	char *buf;
 	str *cid = NULL;
@@ -325,7 +323,7 @@ int add_blind_uac(void)  /*struct cell *t*/
 static inline int update_uac_dst( struct sip_msg *request,
 													struct ua_client *uac )
 {
-	struct socket_info* send_sock;
+	const struct socket_info* send_sock;
 	char *shbuf;
 	unsigned int len;
 
@@ -396,7 +394,8 @@ static inline unsigned int count_local_rr(struct sip_msg *req)
    may break the function logic!
 */
 static int add_uac( struct cell *t, struct sip_msg *request, const str *uri,
-		str* next_hop, unsigned int bflags, str* path, struct proxy_l *proxy)
+		str* next_hop, unsigned int bflags, str* path,
+		int q, struct usr_avp **attrs, struct proxy_l *proxy)
 {
 	unsigned short branch;
 	struct sip_msg_body *body_clone=NO_BODY_CLONE_MARKER;
@@ -423,6 +422,18 @@ static int add_uac( struct cell *t, struct sip_msg *request, const str *uri,
 	request->dst_uri=*next_hop;
 	request->path_vec=*path;
 	request->ruri_bflags=bflags;
+
+	/* we attach the attrs here as we need to see them in branch route
+	 * (inside pre_print_uac_request())
+	 * They will remain attached here if the UAC is successfully created;
+	 * if we exit with return the attrs will be freed by clean_branch().
+	 * Bottom line, we take over the attr list handling, so we NULL the
+	 * received holder (so the upper level will havve nothing to care furhter)
+	 */
+	if (attrs) {
+		t->uac[branch].battrs = *attrs;
+		*attrs = NULL;
+	}
 
 	if ( pre_print_uac_request( t, branch, request, &body_clone)!= 0 ) {
 		ret = -1;
@@ -471,6 +482,7 @@ static int add_uac( struct cell *t, struct sip_msg *request, const str *uri,
 	t->uac[branch].uri.len=request->new_uri.len;
 	t->uac[branch].br_flags = request->ruri_bflags;
 	t->uac[branch].added_rr = count_local_rr( request );
+	t->uac[branch].q = q;
 	t->nr_of_outgoings++;
 
 	/* done! */
@@ -693,14 +705,12 @@ int t_forward_nonack( struct cell *t, struct sip_msg* p_msg ,
 	int branch_ret, lowest_ret;
 	str current_uri;
 	branch_bm_t  added_branches;
-	int i, q;
 	struct cell *t_invite;
-	int success_branch;
-	str dst_uri;
-	struct socket_info *bk_sock;
-	unsigned int br_flags, bk_bflags;
+	int i, success_branch;
+	const struct socket_info *bk_sock;
+	unsigned int bk_bflags;
+	struct msg_branch *branch;
 	int idx;
-	str path;
 	str bk_path;
 
 	/* before doing enything, update the t flags from msg */
@@ -768,17 +778,18 @@ int t_forward_nonack( struct cell *t, struct sip_msg* p_msg ,
 
 	/* as first branch, use current R-URI, bflags, etc. */
 	branch_ret = add_uac( t, p_msg, &current_uri, &backup_dst,
-		getb0flags(p_msg), &p_msg->path_vec, proxy);
+		getb0flags(p_msg), &p_msg->path_vec, p_msg->ruri_q,
+		ruri_branch_attrs_head() , proxy);
 	if (branch_ret>=0)
 		added_branches |= 1<<branch_ret;
 	else
 		lowest_ret=branch_ret;
 
 	/* ....and now add the remaining additional branches */
-	for( idx=0; (current_uri.s=get_branch( idx, &current_uri.len, &q,
-	&dst_uri, &path, &br_flags, &p_msg->force_send_socket))!=0 ; idx++ ) {
-		branch_ret = add_uac( t, p_msg, &current_uri, &dst_uri,
-			br_flags, &path, proxy);
+	for( idx=0; (branch=get_msg_branch(idx))!=NULL ; idx++ ) {
+		p_msg->force_send_socket = branch->force_send_socket;
+		branch_ret = add_uac( t, p_msg, &branch->uri, &branch->dst_uri,
+			branch->bflags, &branch->path, branch->q, &branch->attrs, proxy);
 		/* pick some of the errors in case things go wrong;
 		   note that picking lowest error is just as good as
 		   any other algorithm which picks any other negative
@@ -789,7 +800,7 @@ int t_forward_nonack( struct cell *t, struct sip_msg* p_msg ,
 			lowest_ret=branch_ret;
 	}
 	/* consume processed branches */
-	clear_branches();
+	clear_dset();
 
 	/* restore original stuff */
 	p_msg->new_uri=backup_uri;
@@ -1047,11 +1058,56 @@ int t_wait_no_more_branches( struct cell *t, int extra)
 }
 
 
+int t_wait_no_more_branches_timeout(struct cell *t, int code)
+{
+	static context_p my_ctx = NULL;
+	context_p old_ctx;
+	struct cell *old_t;
+	branch_bm_t cancel_bitmap = 0;
+	int b;
+
+	for (b = t->nr_of_outgoings - 1; b >= t->first_branch; b--) {
+		if (t->uac[b].flags & T_UAC_IS_PHONY) {
+			if (t->uac[b].last_received < 200) {
+				old_ctx = current_processing_ctx;
+				old_t = get_t();
+				if (my_ctx == NULL) {
+					my_ctx = context_alloc(CONTEXT_GLOBAL);
+					if (my_ctx == NULL) {
+						LM_ERR("failed to alloc new ctx in pkg\n");
+						return -1;
+					}
+				}
+				memset(my_ctx, 0, context_size(CONTEXT_GLOBAL));
+				set_global_context(my_ctx);
+				set_t(t);
+
+				_tm_branch_index = b;
+				LOCK_REPLIES(t);
+				relay_reply(t, FAKED_REPLY, b, code, &cancel_bitmap);
+				_tm_branch_index = 0;
+
+				if (current_processing_ctx == NULL)
+					my_ctx = NULL;
+				else
+					context_destroy(CONTEXT_GLOBAL, my_ctx);
+				set_global_context(old_ctx);
+				set_t(old_t);
+			}
+			t->uac[b].br_flags = t->nr_of_outgoings;
+			return 0;
+		}
+	}
+
+	return -1;
+}
+
 int t_inject_branch( struct cell *t, struct sip_msg *msg, int flags)
 {
 	static struct sip_msg faked_req;
 	branch_bm_t cancel_bm = 0;
 	str reason = str_init(CANCEL_REASON_200);
+	struct cell *bk_t = NULL;
 	int rc;
 
 	/* does the transaction state still accept new branches ? */
@@ -1086,14 +1142,19 @@ int t_inject_branch( struct cell *t, struct sip_msg *msg, int flags)
 			/* current message is a reply, so take the first branch from dset
 			 * and move it into the faked msg (that will be used by t_fwd 
 			 * function)*/
-			if (move_branch_to_ruri( 0, &faked_req)<0) {
+			if (move_msg_branch_to_ruri( 0, &faked_req)<0) {
 				LM_ERR("no branch found to be moved as new destination\n");
 				goto error;
 			}
 			/* remove it from set */
-			remove_branch(0);
+			remove_msg_branch(0);
 		}
 	}
+
+	/* t_forward_nonack() relies on T for various internal stuff, so be
+	 * we advertise the correct one */
+	bk_t = get_t();
+	set_t( t );
 
 	/* do we have to cancel the existing branches before injecting new ones? */
 	if (flags&TM_INJECT_FLAG_CANCEL) {
@@ -1112,6 +1173,8 @@ int t_inject_branch( struct cell *t, struct sip_msg *msg, int flags)
 		cancel_uacs( t, cancel_bm );
 		set_cancel_extra_hdrs( NULL, 0);
 	}
+
+	set_t( bk_t );
 
 	/* cleanup the faked request */
 	free_faked_req( &faked_req, t);
@@ -1145,7 +1208,7 @@ int t_replicate(struct sip_msg *p_msg, str *dst, int flags)
 		return -1;
 	}
 
-	if ( branch_uri2dset( GET_RURI(p_msg) )!=0 ) {
+	if ( msg_branch_uri2dset( GET_RURI(p_msg) )!=0 ) {
 		LM_ERR("failed to convert uri to dst\n");
 		return -1;
 	}

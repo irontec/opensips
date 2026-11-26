@@ -54,12 +54,18 @@
 extern int port;
 extern str ip;
 extern str buffer;
+extern unsigned int hd_conn_timeout_s;
 extern int post_buf_size;
 extern str tls_cert_file;
 extern str tls_key_file;
 extern str tls_ciphers;
 extern struct httpd_cb *httpd_cb_list;
 static union sockaddr_union httpd_server_info;
+
+
+extern int receive_buf_size;
+extern char *httpd_receive_buff;
+extern int httpd_receive_buff_pos;
 
 static const str MI_HTTP_U_URL = str_init("<html><body>"
 "Unable to parse URL!</body></html>");
@@ -126,6 +132,26 @@ int httpd_get_val(void *e_data, void *data, void *r_data)
 				kv->key.len, kv->key.s,
 				kv->val.len, kv->val.s);
 			return 1;
+		}
+	}
+	return 0;
+}
+
+int httpd_merge_data(void *e_data, void *data, void *r_data)
+{
+	str_str_t *kv = (str_str_t*)e_data;
+	if (kv==NULL) {
+		LM_ERR("null data\n");
+	} else {
+		LM_DBG("data=[%p] [%p][%p] [%.*s]->[%.*s]\n",
+			kv, kv->key.s, kv->val.s,
+			kv->key.len, kv->key.s,
+			kv->val.len, kv->val.s);
+		if (httpd_receive_buff_pos + kv->val.len > receive_buf_size) {
+			LM_ERR("Received too big HTTP request ( %d bytes ), increase receive_buf_size param value\n", httpd_receive_buff_pos + kv->val.len);
+		} else {
+			memcpy(httpd_receive_buff+httpd_receive_buff_pos,kv->val.s,kv->val.len);
+			httpd_receive_buff_pos+=kv->val.len;
 		}
 	}
 	return 0;
@@ -264,13 +290,18 @@ static MHD_RET post_iterator (void *cls,
 	LM_DBG("[%.*s]->[%.*s]\n", key_len, key, (int)size, value);
 
 	kv = (str_str_t*)slinkedl_append(pr->p_list,
-						sizeof(str_str_t) + key_len + size);
+						sizeof(str_str_t) + key_len + size + 1);
+	if (!kv) {
+		LM_ERR("oom\n");
+		pr->status = -1; return MHD_NO;
+	}
 	p = (char*)(kv + 1);
 	kv->key.len = key_len; kv->key.s = p;
 	memcpy(p, key, key_len);
 	p += key_len;
 	kv->val.len = size; kv->val.s = p;
 	memcpy(p, value, size);
+	p[size] = '\0';
 	LM_DBG("inserting element pr=[%p] pp=[%p] p_list=[%p]\n",
 				pr, pr->pp, pr->p_list);
 
@@ -295,7 +326,8 @@ MHD_RET getConnectionHeader(void *cls, enum MHD_ValueKind kind,
 	struct post_request *pr = (struct post_request*)cls;
 	str content_length;
 	unsigned int len;
-	char *p, bk;
+	const char *p;
+	size_t value_len;
 
 	if (cls == NULL) {
 		LM_ERR("Unable to store return data\n");
@@ -319,24 +351,29 @@ MHD_RET getConnectionHeader(void *cls, enum MHD_ValueKind kind,
 	if (strcasecmp("Content-Type", key) == 0) {
 		LM_DBG("Content-Type=%s\n", value);
 		/* extract only the mime */
+		value_len = strlen(value);
 		if ( (p=strchr(value, ';'))!=NULL ) {
-			while( p>value && (*(p-1)==' ' || *(p-1)=='\t') ) p--;
-			bk = *p;
-			*p = 0;
+			value_len = p - value;
+			while (value_len &&
+					(value[value_len - 1] == ' ' ||
+					 value[value_len - 1] == '\t'))
+				value_len--;
 		}
-		if (strcasecmp("text/xml", value) == 0)
+		if (value_len == 8 && strncasecmp("text/xml", value, value_len) == 0)
 			pr->content_type = HTTPD_TEXT_XML_CNT_TYPE;
-		else if (strncasecmp("application/json", value, 16) == 0)
+		else if (value_len >= 16 &&
+				strncasecmp("application/json", value, 16) == 0)
 			pr->content_type = HTTPD_APPLICATION_JSON_CNT_TYPE;
-		else if (strncasecmp("text/html", value, 9) == 0)
+		else if (value_len >= 9 &&
+				strncasecmp("text/html", value, 9) == 0)
 			pr->content_type = HTTPD_TEXT_HTML_TYPE;
-		else if (strncasecmp("text/plain", value, 10) == 0)
+		else if (value_len >= 10 &&
+				strncasecmp("text/plain", value, 10) == 0)
 			pr->content_type = HTTPD_TEXT_PLAIN_TYPE;
 		else {
 			pr->content_type = HTTPD_UNKNOWN_CNT_TYPE;
 			LM_ERR("Unexpected Content-Type=[%s]\n", value);
 		}
-		if (p) *p = bk;
 		goto done;
 	}
 	if (strcasecmp("Content-Length", key) == 0) {
@@ -453,6 +490,9 @@ MHD_RET answer_to_connection (void *cls, struct MHD_Connection *connection,
 	cl_socket = (union sockaddr_union *)MHD_get_connection_info(connection,
 			MHD_CONNECTION_INFO_CLIENT_ADDRESS)->client_addr;
 
+	if (!MHD_set_connection_option(connection, MHD_CONNECTION_OPTION_TIMEOUT, hd_conn_timeout_s))
+		LM_ERR("failed to set connection timeout\n");
+
 #if ( MHD_VERSION >= 0x000092800 )
 	sv_sockfd = MHD_get_connection_info(connection, MHD_CONNECTION_INFO_CONNECTION_FD)->connect_fd;
 	if (getsockname( sv_sockfd, &httpd_server_info.s, &addrlen) < 0) {
@@ -494,9 +534,12 @@ MHD_RET answer_to_connection (void *cls, struct MHD_Connection *connection,
 					if (cb) {
 						normalised_url = &url[cb->http_root->len+1];
 						LM_DBG("normalised_url=[%s]\n", normalised_url);
-						kv = slinkedl_peek(pr->p_list);
-						if (kv)
-							saved_body = ((str_str_t *)kv)->val;
+						httpd_receive_buff_pos=0;
+						slinkedl_traverse(pr->p_list,&httpd_merge_data, NULL, NULL);
+						if (httpd_receive_buff_pos>0) {
+							saved_body.len = httpd_receive_buff_pos;
+							saved_body.s = httpd_receive_buff;
+						}
 						ret_code = cb->callback(cls, (void*)connection,
 								normalised_url,
 								method, version,
@@ -525,11 +568,6 @@ MHD_RET answer_to_connection (void *cls, struct MHD_Connection *connection,
 					err log printed in getConnectionHeader() */
 					return MHD_NO;
 				}
-				if (*upload_data_size != pr->content_len) {
-					/* For now, we don't support large POST with truncated data */
-					LM_ERR("got a truncated POST request\n");
-					return MHD_NO;
-				}
 				LM_DBG("got ContentType [%d] with len [%d]: %.*s\n",
 					pr->content_type, pr->content_len,
 					(int)*upload_data_size, upload_data);
@@ -540,7 +578,11 @@ MHD_RET answer_to_connection (void *cls, struct MHD_Connection *connection,
 					/* Save the entire body as the '1' key */
 					kv = (str_str_t*)slinkedl_append(pr->p_list,
 							sizeof(str_str_t) + 1 +
-							*upload_data_size);
+							*upload_data_size + 1);
+					if (!kv) {
+						LM_ERR("oom\n");
+						return MHD_NO;
+					}
 					p = (char*)(kv + 1);
 					kv->key.len = 1; kv->key.s = p;
 					memcpy(p, "1", 1);
@@ -548,6 +590,7 @@ MHD_RET answer_to_connection (void *cls, struct MHD_Connection *connection,
 					kv->val.len = *upload_data_size;
 					kv->val.s = p;
 					memcpy(p, upload_data, *upload_data_size);
+					p[*upload_data_size] = '\0';
 					break;
 				default:
 					LM_ERR("Unhandled data for ContentType [%d]\n",
@@ -747,6 +790,7 @@ void httpd_proc(int rank)
 
   		cert_pem = load_file(tls_cert_file.s);
 		if (NULL == cert_pem) {
+			free(key_pem);	
 			LM_ERR("unable to load tls certificate\n");
 			return;
 		}
@@ -920,7 +964,7 @@ static char * load_file(char * filename)
 	fseek(f, 0, SEEK_END);
 	long fsize = ftell(f);
 
-	if(fsize == 0) {
+	if(fsize <= 0) {
 		fclose(f);
 		return NULL;
 	}

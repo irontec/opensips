@@ -78,6 +78,12 @@ int enable_asserts = 1;
 #else
 int enable_asserts = 0;
 #endif
+
+#ifdef EXTRA_DEBUG
+int reactor_dbg_fd_check = 1;
+#else
+int reactor_dbg_fd_check = 0;
+#endif
 /* abort process on failed assertion. disabled by default */
 int abort_on_assert = 0;
 /* start by only logging to stderr */
@@ -138,7 +144,7 @@ int mcast_ttl = -1; /* if -1, don't touch it, use the default (usually 1) */
 
 int tos = IPTOS_LOWDELAY; // lgtm [cpp/short-global-name]
 
-struct socket_info* bind_address=NULL; /* pointer to the crt. proc.
+const struct socket_info* bind_address=NULL; /* pointer to the crt. proc.
 				       listening address*/
 
 /* if aliases should be automatically discovered and added

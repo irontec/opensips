@@ -13,7 +13,7 @@ ETC_DIR?=../../etc/
 # Find the radius library we shall use
 #
 ifeq ($(RADIUSCLIENT),)
-RADIUSCLIENT=$(shell if [ -n "`ldconfig -p | grep radcli`" ]; then echo "RADCLI"; \
+RADIUSCLIENT := $(shell if [ -n "`ldconfig -p | grep radcli`" ]; then echo "RADCLI"; \
 	elif [ -n "`ldconfig -p | grep freeradius`" ]; then echo "FREERADIUS"; \
 	elif [ -n "`ldconfig -p | grep radiusclient-ng`" ];then echo "RADIUSCLIENT"; fi)
 endif
@@ -38,7 +38,7 @@ else
 endif
 
 ifeq ($(CROSS_COMPILE),)
-	BUILDER=$(shell if pkg-config --exists $(RADIUS_PACKET); then \
+	BUILDER := $(shell if pkg-config --exists $(RADIUS_PACKET); then \
 		echo "pkg-config $(RADIUS_PACKET)"; \
 	fi)
 else
@@ -47,8 +47,8 @@ else
 endif
 
 ifneq ($(BUILDER),)
-	DEFS+= $(shell $(BULDER) --cflags)
-	LIBS+= $(shell $(BULDER) --libs)
+	DEFS+= $(shell $(BUILDER) --cflags)
+	LIBS+= $(shell $(BUILDER) --libs)
 else
 ifeq ($(CROSS_COMPILE),)
 	## we didn't find the packet with pkg-config

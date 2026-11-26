@@ -188,6 +188,8 @@
 #include "rtpproxy_vcmd.h"
 #include "rtppn_connect.h"
 #include "../rtp_relay/rtp_relay.h"
+#include "../rtp.io/rtp_io_api.h"
+
 #define NH_TABLE_VERSION  0
 
 #define DEFAULT_RTPP_SET_ID		0
@@ -368,6 +370,7 @@ static int rtpproxy_autobridge = 0;
 static pid_t mypid;
 static int myrand = 0;
 static unsigned int myseqn = 0;
+static int myrank = 0;
 static str nortpproxy_str = str_init("a=nortpproxy:yes");
 str rtpp_notify_socket = {0, 0};
 /*
@@ -385,8 +388,13 @@ struct rtpp_set_head ** rtpp_set_list =0;
 struct rtpp_set ** default_rtpp_set=0;
 static int default_rtpp_set_no = DEFAULT_RTPP_SET_ID;
 
+struct rtpp_sock {
+	int fd;
+	enum comm_modes rn_umode;
+};
+
 /* array with the sockets used by rtpporxy (per process)*/
-static int *rtpp_socks = 0;
+static struct rtpp_sock *rtpp_socks = NULL;
 static unsigned int *rtpp_no = 0;
 static unsigned int *list_version;
 static unsigned int my_version = 0;
@@ -641,8 +649,7 @@ static int rtpproxy_set_notify(modparam_t type, void * val)
 	return 0;
 }
 
-static int add_rtpproxy_socks(struct rtpp_set * rtpp_list,
-										char * rtpproxy){
+static int add_rtpproxy_socks(struct rtpp_set * rtpp_list, char *rtpproxy){
 	/* Make rtp proxies list. */
 	char *p, *p1, *p2, *p3, *p4, *plim;
 	struct rtpp_node *pnode;
@@ -726,6 +733,13 @@ static int add_rtpproxy_socks(struct rtpp_set * rtpp_list,
 		} else if (strncasecmp(pnode->rn_address, "cunix:", 6) == 0) {
 			pnode->rn_umode = CM_CUNIX;
 			pnode->rn_address += 6;
+		} else if (strncasecmp(pnode->rn_address, "rtp.io:auto", 11) == 0) {
+			if (pnode->rn_address[11] != '\0') {
+				LM_ERR("only \"rtp.io:auto\" is supported\n");
+				return -1;
+			}
+			pnode->rn_umode = CM_RTPIO;
+			pnode->rn_address += 11;
 		}
 
 		if (rtpp_list->rn_first == NULL) {
@@ -905,7 +919,7 @@ static mi_response_t *mi_enable_rtp_proxy(const mi_params_t *params,
 	int enable;
 	struct rtpp_set * rtpp_list;
 	struct rtpp_node * crt_rtpp;
-	int found;
+	int found, disabled, prev_disabled, recheck_ticks;
 
 	found = 0;
 
@@ -936,10 +950,25 @@ static mi_response_t *mi_enable_rtp_proxy(const mi_params_t *params,
 				if(strncmp(crt_rtpp->rn_url.s, rtpp_url.s, rtpp_url.len) == 0){
 					/*set the enabled/disabled status*/
 					found = 1;
-					crt_rtpp->rn_recheck_ticks =
-						enable? MI_MIN_RECHECK_TICKS : MI_MAX_RECHECK_TICKS;
-					crt_rtpp->rn_disabled = enable?0:1;
-					raise_rtpproxy_event(crt_rtpp, crt_rtpp->rn_disabled);
+					prev_disabled = crt_rtpp->rn_disabled;
+					switch (enable) {
+						case 0: /* disable */
+							recheck_ticks = MI_MAX_RECHECK_TICKS;
+							disabled = 1;
+							break;
+						case 2: /* pending */
+							recheck_ticks = get_ticks() + rtpproxy_disable_tout;
+							disabled = 1;
+							break;
+						default: /* enable */
+							recheck_ticks = MI_MIN_RECHECK_TICKS;
+							disabled = 0;
+							break;
+					}
+					crt_rtpp->rn_recheck_ticks = recheck_ticks;
+					crt_rtpp->rn_disabled = disabled;
+					if (prev_disabled != crt_rtpp->rn_disabled)
+						raise_rtpproxy_event(crt_rtpp, crt_rtpp->rn_disabled);
 				}
 			}
 		}
@@ -1116,6 +1145,16 @@ static int mod_preinit(void)
 	return 0;
 }
 
+static rtp_io_getchildsock_t
+rtp_io_childsock_f(void)
+{
+	static rtp_io_getchildsock_t _rtp_io_getchildsock = {0};
+
+	if (_rtp_io_getchildsock == NULL)
+		_rtp_io_getchildsock = (rtp_io_getchildsock_t)find_export("rtp_io_getchildsock", 0);
+	return _rtp_io_getchildsock;
+}
+
 static int
 mod_init(void)
 {
@@ -1166,8 +1205,11 @@ mod_init(void)
 	if(db_url.s == NULL)
 	{
 		if (rtpp_sets == 0) {
-			LM_ERR("no rtpproxy set specified\n");
-			return -1;
+			int rtp_io_found = (rtp_io_childsock_f() == NULL) ? 0 : 1;
+			if (!rtp_io_found || rtpproxy_add_rtpproxy_set("rtp.io:auto", -1) != 0) {
+				LM_ERR("no rtpproxy set specified");
+				return -1;
+			}
 		}
 
 		/* storing the list of rtp proxy sets in shared memory*/
@@ -1355,7 +1397,7 @@ mod_init(void)
 
 static int mi_child_init(void)
 {
-	if(child_init(1) < 0)
+	if (child_init(1) < 0)
 	{
 		LM_ERR("Failed to initial rtpp socks\n");
 		return -1;
@@ -1465,6 +1507,7 @@ child_init(int rank)
 
 	mypid = getpid();
 	myrand = rand()%10000;
+	myrank = rank;
 
 	return connect_rtpproxies(NULL);
 }
@@ -1480,7 +1523,8 @@ int connect_rtpproxies(struct rtpp_set *filter)
 	LM_DBG("[Re]connecting sockets (%d > %d)\n", *rtpp_no, rtpp_number);
 
 	if (*rtpp_no > rtpp_number) {
-		rtpp_socks = (int*)pkg_realloc(rtpp_socks, *rtpp_no * sizeof(int) );
+		size_t asize = *rtpp_no * sizeof(rtpp_socks[0]);
+		rtpp_socks = (typeof(rtpp_socks))pkg_realloc(rtpp_socks, asize);
 		if (rtpp_socks==NULL) {
 			LM_ERR("no more pkg memory\n");
 			return -1;
@@ -1495,16 +1539,31 @@ int connect_rtpproxies(struct rtpp_set *filter)
 			continue;
 
 		for (pnode=rtpp_list->rn_first; pnode!=0; pnode = pnode->rn_next){
-			if (pnode->rn_umode == CM_UNIX) {
-				rtpp_socks[pnode->idx] = -1;
-			} else {
-				rtpp_socks[pnode->idx] = connect_rtpp_node(pnode);
-				LM_INFO("created to %d\n", rtpp_socks[pnode->idx]);
-				if (rtpp_socks[pnode->idx] == -1) {
+			switch (pnode->rn_umode) {
+			case CM_UNIX:
+				rtpp_socks[pnode->idx].fd = -1;
+				break;
+			case CM_RTPIO:
+				{
+					rtp_io_getchildsock_t gcs_f;
+					gcs_f = rtp_io_childsock_f();
+					if (gcs_f == NULL) {
+						LM_ERR("rtp.io is not loaded\n");
+						return -1;
+					}
+					rtpp_socks[pnode->idx].fd = gcs_f(myrank);
+				}
+				break;
+			default:
+				rtpp_socks[pnode->idx].fd = connect_rtpp_node(pnode);
+				LM_INFO("created to %d\n", rtpp_socks[pnode->idx].fd);
+				if (rtpp_socks[pnode->idx].fd == -1) {
 					LM_ERR("connect_rtpp_node() failed\n");
 					return -1;
 				}
+				break;
 			}
+			rtpp_socks[pnode->idx].rn_umode = pnode->rn_umode;
 			pnode->rn_disabled = rtpp_test(pnode, 0, 1);
 		}
 
@@ -1534,13 +1593,15 @@ int update_rtpp_proxies(struct rtpp_set *filter) {
 
 	update_rtpp_notify();
 	for (i = 0; i < rtpp_number; i++) {
+		if (rtpp_socks[i].rn_umode == CM_RTPIO)
+			continue;
 		if (!filter ||
 		        (filter->rtpp_socks_idx <= i
 		         && i < filter->rtpp_socks_idx + filter->rtpp_node_count)) {
-			LM_DBG("closing rtpp_socks[%d] | filter_set: %d\n", i,
+			LM_DBG("closing rtpp_socks[%d].fd | filter_set: %d\n", i,
 			       filter ? filter->id_set : -1);
-			shutdown(rtpp_socks[i], SHUT_RDWR);
-			close(rtpp_socks[i]);
+			shutdown(rtpp_socks[i].fd, SHUT_RDWR);
+			close(rtpp_socks[i].fd);
 		}
 	}
 
@@ -2062,8 +2123,9 @@ rtpp_test(struct rtpp_node *node, int isdisabled, int force)
 				"%s\n", node->rn_url.s, REQ_CPROTOVER);
 		goto error;
 	}
-	LM_INFO("rtp proxy <%s> found, support for it %senabled\n",
-	    node->rn_url.s, force == 0 ? "re-" : "");
+	if (isdisabled)
+		LM_INFO("rtp proxy <%s> found, support for it %senabled\n",
+				node->rn_url.s, force == 0 ? "re-" : "");
 	/* Check for optional capabilities */
 	if (rtpp_checkcap(node, RTP_CAP(REPACK)) > 0)
 		SET_CAP(node, REPACK);
@@ -2119,9 +2181,10 @@ send_rtpp_command(struct rtpp_node *node, struct rtpproxy_vcmd *vcmd, int vcnt)
 		max_vcnt = IOV_MAX;
 #endif
 
-	if (rtpp_socks[node->idx] == -1 && node->rn_umode != CM_UNIX) {
-		rtpp_socks[node->idx] = connect_rtpp_node(node);
-		if (rtpp_socks[node->idx] == -1) {
+	if (rtpp_socks[node->idx].fd == -1 && node->rn_umode != CM_UNIX &&
+	    node->rn_umode != CM_RTPIO) {
+		rtpp_socks[node->idx].fd = connect_rtpp_node(node);
+		if (rtpp_socks[node->idx].fd == -1) {
 			LM_ERR("connect_rtpp_node() failed\n");
 			return (NULL);
 		}
@@ -2202,18 +2265,18 @@ retry:
 		}
 	} else {
 		int rtry = CM_STREAM(node) ? 1 : rtpproxy_retr;
-		fds[0].fd = rtpp_socks[node->idx];
+		fds[0].fd = rtpp_socks[node->idx].fd;
 		fds[0].events = POLLIN | POLLRDHUP;
 		fds[0].revents = 0;
 		/* Drain input buffer */
 		while ((poll(fds, 1, 0) == 1) &&
 		    ((fds[0].revents & POLLIN) != 0)) {
 			if (fds[0].revents & (POLLERR|POLLNVAL|POLLRDHUP)) {
-				LM_ERR("error on rtpproxy socket %d!\n", rtpp_socks[node->idx]);
+				LM_ERR("error on rtpproxy socket %d!\n", rtpp_socks[node->idx].fd);
 				break;
 			}
 			fds[0].revents = 0;
-			if (recv(rtpp_socks[node->idx], buf, sizeof(buf) - 1, 0) < 0 &&
+			if (recv(rtpp_socks[node->idx].fd, buf, sizeof(buf) - 1, 0) < 0 &&
 					errno != EINTR) {
 				LM_ERR("error while draining rtpproxy %d!\n", errno);
 				break;
@@ -2229,7 +2292,7 @@ retry:
 		for (i = 0; i < rtry; i++) {
 			int buflen = sizeof(buf)-1;
 			do {
-				len = writev(rtpp_socks[node->idx], cv, vcnt + 1);
+				len = writev(rtpp_socks[node->idx].fd, cv, vcnt + 1);
 			} while (len == -1 && (errno == EINTR || errno == ENOBUFS));
 			if (len <= 0) {
 				LM_ERR("can't send (#%d iovec buffers) command to a RTP proxy (%d:%s)\n",
@@ -2241,7 +2304,7 @@ retry:
 				int s_errno;
 
 				do {
-					len = recv(rtpp_socks[node->idx], cp, buflen, 0);
+					len = recv(rtpp_socks[node->idx].fd, cp, buflen, 0);
 				} while (len == -1 && errno == EINTR);
 				s_errno = (len < 0) ? errno : 0;
 				if (len <= 0) {
@@ -2290,9 +2353,9 @@ out:
 	return cp;
 badproxy:
 	LM_ERR("proxy <%s> does not respond, disable it\n", node->rn_url.s);
-	if (CM_STREAM(node)) {
-		close(rtpp_socks[node->idx]);
-		rtpp_socks[node->idx] = -1;
+	if (CM_STREAM(node) && node->rn_umode != CM_RTPIO) {
+		close(rtpp_socks[node->idx].fd);
+		rtpp_socks[node->idx].fd = -1;
 	}
 	node->rn_disabled = 1;
 	node->rn_recheck_ticks = get_ticks() + rtpproxy_disable_tout;
@@ -2677,17 +2740,6 @@ rtpproxy_offer6_f(struct sip_msg *msg, str *param1, str *param2,
 				nh_set_param_t *param3, pv_spec_t *param4, pv_spec_t *param5,
 				pv_spec_t *param6)
 {
-	if(rtpp_notify_socket.s)
-	{
-		if ( (!msg->to && parse_headers(msg, HDR_TO_F,0)<0) || !msg->to ) {
-			LM_ERR("bad request or missing TO hdr\n");
-			return -1;
-		}
-
-		/* if an initial request - create a new dialog */
-		if(get_to(msg)->tag_value.s == NULL && dlg_api.create_dlg)
-			dlg_api.create_dlg(msg,0);
-	}
 	return rtpproxy_offer_answer6_f(msg, param1, param2, param3, param4,
 			param5, param6, 1);
 }
@@ -2956,7 +3008,7 @@ static int engage_force_rtpproxy(struct dlg_cell *dlg, struct sip_msg *msg)
 		if (!has_sdp) {
 			if (msg->first_line.type == SIP_REQUEST &&
 					(method_id == METHOD_INVITE ||  method_id == METHOD_UPDATE)) {
-				/* indicate there's an ongoing late negociation happening */
+				/* indicate there's an ongoing late negotiation happening */
 				value.s = late_name;
 				if (dlg_api.store_dlg_value(dlg, &late_name, &value,
 					DLG_VAL_TYPE_NONE) < 0) {
@@ -3529,7 +3581,7 @@ static int rtpproxy_offer_answer(struct sip_msg *msg, struct rtpp_args *args,
 	);
 	char *v1p, *v2p, *c1p, *c2p, *m1p, *m2p, *bodylimit, *o1p, *r2p, *newbody;
 	char medianum_buf[20];
-	char buf[32], dbuf[128];
+	char buf[32], dbuf[256];
 	int medianum, media_multi;
 	str medianum_str, tmpstr1;
 	int c1p_altered;
@@ -3783,6 +3835,16 @@ static int rtpproxy_offer_answer(struct sip_msg *msg, struct rtpp_args *args,
 
 	if (opts.s.s[0] == 'U') {
 		if(enable_notification && dlg_api.get_dlg) {
+
+			if ( (!msg->to && parse_headers(msg, HDR_TO_F,0)<0) || !msg->to ) {
+				LM_ERR("bad request or missing TO hdr\n");
+				goto error;
+			}
+
+			/* if an initial request - create a new dialog */
+			if(get_to(msg)->tag_value.s == NULL && dlg_api.create_dlg)
+				dlg_api.create_dlg(msg,0);
+
 			dlg = dlg_api.get_dlg();
 			if(dlg == NULL)
 			{
@@ -3823,10 +3885,15 @@ static int rtpproxy_offer_answer(struct sip_msg *msg, struct rtpp_args *args,
 				LM_ERR("did too large to fit!\n");
 				goto error;
 			}
-			dtmf_tag.len = snprintf(dbuf, 128, "d%.*s", did->len, did->s);
+			dtmf_tag.len = snprintf(dbuf, sizeof(dbuf), "d%.*s", did->len, did->s);
 		} else {
 			LM_DBG("using DTMF callid %.*s identifier\n", args->callid.len, args->callid.s);
-			dtmf_tag.len = snprintf(dbuf, 128, "c%.*s", args->callid.len, args->callid.s);
+			if (args->callid.len > (int)sizeof(dbuf) - 2) {
+				LM_ERR("callid too large to fit!\n");
+				goto error;
+			}
+			dtmf_tag.len = snprintf(dbuf, sizeof(dbuf), "c%.*s",
+				args->callid.len, args->callid.s);
 		}
 		dtmf_tag.s = dbuf;
 	}
@@ -3839,7 +3906,7 @@ static int rtpproxy_offer_answer(struct sip_msg *msg, struct rtpp_args *args,
 			LM_ERR("could not allocate space for new body\n");
 			goto error;
 		}
-		allocated_body = args->body.len;
+		allocated_body = 1;
 		body->len = 0;
 	}
 
@@ -5007,13 +5074,16 @@ int rtpproxy_raise_dtmf_event(struct rtpp_dtmf_event *dtmf)
 
 static int rtpproxy_fill_call_args(struct rtp_relay_session *sess, struct rtpp_args *args,
 		str *ip, str *type, str *in_iface, str *out_iface,
-		str *global_flags, str *flags, str *extra_flags)
+		str *global_flags, str *flags, str *extra_flags, int require_from_tag)
 {
 	char *p;
 	str b;
 
 	if (!sess->from_tag) {
-		if (get_from_tag(sess->msg, &args->from_tag) == -1 || args->from_tag.len == 0) {
+		if (require_from_tag &&
+				(!sess->msg ||
+				get_from_tag(sess->msg, &args->from_tag) == -1 ||
+				args->from_tag.len == 0)) {
 			LM_ERR("can't get From tag\n");
 			return 0;
 		}
@@ -5029,7 +5099,9 @@ static int rtpproxy_fill_call_args(struct rtp_relay_session *sess, struct rtpp_a
 		args->to_tag = *sess->to_tag;
 	}
 	if (!sess->callid) {
-		if (get_callid(sess->msg, &args->callid) == -1 || args->callid.len == 0) {
+		if (!sess->msg ||
+				get_callid(sess->msg, &args->callid) == -1 ||
+				args->callid.len == 0) {
 			LM_ERR("can't get Call-Id field\n");
 			return 0;
 		}
@@ -5126,7 +5198,7 @@ static int rtpproxy_api_offer(struct rtp_relay_session *sess,
 	memset(&args, '\0', sizeof(args));
 
 	if (!rtpproxy_fill_call_args(sess, &args, ip, type,
-			in_iface, out_iface, global_flags, flags, extra_flags))
+			in_iface, out_iface, global_flags, flags, extra_flags, 1))
 		return -1;
 
 	if (!server->node.s) {
@@ -5193,7 +5265,7 @@ static int rtpproxy_api_answer(struct rtp_relay_session *sess,
 	memset(&args, '\0', sizeof(args));
 
 	if (!rtpproxy_fill_call_args(sess, &args, ip, type,
-			in_iface, out_iface, global_flags, flags, extra_flags))
+			in_iface, out_iface, global_flags, flags, extra_flags, 1))
 		return -1;
 
 	if (nh_lock)
@@ -5235,7 +5307,7 @@ static int rtpproxy_api_delete(struct rtp_relay_session *sess, struct rtp_relay_
 
 	memset(&args, '\0', sizeof(args));
 	if (!rtpproxy_fill_call_args(sess, &args, NULL, NULL,
-			NULL, NULL, NULL, flags, extra))
+			NULL, NULL, NULL, flags, extra, 0))
 		return -1;
 
 	if (nh_lock) {
@@ -5838,7 +5910,7 @@ static int rtpproxy_api_copy_answer(struct rtp_relay_session *sess,
 	memset(&args, '\0', sizeof(args));
 
 	if (!rtpproxy_fill_call_args(sess, &args, NULL, NULL,
-			NULL, NULL, NULL, flags, NULL))
+			NULL, NULL, NULL, flags, NULL, 1))
 		return -1;
 
 	if (!server->node.s) {
@@ -5905,7 +5977,7 @@ static int rtpproxy_api_copy_delete(struct rtp_relay_session *sess,
 	memset(&args, '\0', sizeof(args));
 
 	if (!rtpproxy_fill_call_args(sess, &args, NULL, NULL,
-			NULL, NULL, NULL, flags, NULL))
+			NULL, NULL, NULL, flags, NULL, 1))
 		return -1;
 
 	if (!server->node.s) {

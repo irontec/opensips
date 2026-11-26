@@ -192,6 +192,8 @@ acc_ctx_t* try_fetch_ctx(void)
 
 	struct cell* t;
 	struct dlg_cell* dlg;
+	/* TM callbacks may have no SIP context to cache into. */
+	int cache_locally = current_processing_ctx != NULL;
 
 	if ((ret = ACC_GET_CTX()) == NULL) {
 		if (!tmb.t_gett || (t = tmb.t_gett()) == T_UNDEFINED)
@@ -209,24 +211,25 @@ acc_ctx_t* try_fetch_ctx(void)
 				/* can't find the context anywhere */
 				return NULL;
 
-			acc_ref_ex(ret, 2);
+			acc_ref_ex(ret, cache_locally ? 2 : 1);
 			ACC_PUT_TM_CTX(t, ret);
-			ACC_PUT_CTX(ret);
+			if (cache_locally)
+				ACC_PUT_CTX(ret);
 		} else if (ret) { /* we have the context in transaction */
 			/* in transaction; put them in dialog(if possible) and in processing context */
-			acc_ref(ret);
-			ACC_PUT_CTX(ret);
-		} else if (dlg) { /* no (context in) transaction; search only in dialog*/
+			if (cache_locally) {
+				acc_ref(ret);
+				ACC_PUT_CTX(ret);
+			}
+		} else if (dlg) { /* no transaction; search only in dialog */
 			ret = dlg_api.dlg_ctx_get_ptr(dlg, acc_dlg_ctx_idx);
 			if (!ret)
 				/* can't find the context anywhere */
 				return NULL;
-			if (t) {
-				acc_ref_ex(ret, 2); /* ref twice - for local and tm ctx */
-				ACC_PUT_TM_CTX(t, ret);
-			} else
-				acc_ref(ret); /* ref only once, for local ctx */
-			ACC_PUT_CTX(ret);
+			if (cache_locally) {
+				acc_ref(ret);
+				ACC_PUT_CTX(ret);
+			}
 		}
 	}
 
@@ -422,19 +425,6 @@ int acc_comm_to_acc_param(struct sip_msg* rq, str* comm, struct acc_param* accp)
 	return 0;
 }
 
-static inline int has_totag(struct sip_msg *msg)
-{
-	/* check if it has to tag */
-	if ( (!msg->to && parse_headers(msg, HDR_TO_F,0)<0) || !msg->to ) {
-		LM_ERR("bad request or missing TO hdr :-/\n");
-		return 0;
-	}
-	if (get_to(msg)->tag_value.s != 0 && get_to(msg)->tag_value.len != 0)
-		return 1;
-	return 0;
-}
-
-
 /* is this reply of interest for accounting ? */
 static inline int should_acc_reply(struct sip_msg *req,struct sip_msg *rpl,
 								int code, unsigned long long* flags)
@@ -470,6 +460,7 @@ static inline void acc_onreply_in(struct cell *t, struct sip_msg *req,
 				|| (is_invite(t)
 					&& code >= 300
 					&& is_mc_acc_on(ctx->flags)))) {
+		/* coverity[check_return: FALSE] */
 		parse_headers(reply, HDR_TO_F, 0 );
 	}
 }
