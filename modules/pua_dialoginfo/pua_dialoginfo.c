@@ -102,6 +102,7 @@ struct dlginfo_cb_params {
 	struct dlginfo_part entity;
 	long long bitmask_early;
 	long long bitmask_failed;
+	long long bitmask_published;
 };
 
 static void free_cb_param(void *param);
@@ -173,6 +174,44 @@ struct module_exports exports= {
 };
 
 
+static inline int get_per_branch_custom_callee(struct dlg_cell *dlg, int branch,
+							int_str *mute_val, struct dlginfo_part *custom )
+{
+	str name_d, name_u, mute_var;
+	int val_type;
+	int_str isval;
+
+	/* try to see if there are any muting settings per branch */
+	build_branch_mute_var_name( branch, &mute_var );
+	if (dlg_api.fetch_dlg_value(dlg, &mute_var, &val_type, mute_val, 1)== 0) {
+		if (mute_val->s.len!=2) {/* we expect a new letters string */
+			pkg_free(mute_val->s.s);
+			mute_val->s.s=NULL;
+			mute_val->s.len=0;
+		} else {
+			LM_DBG("per-branch mute information was found as [%.*s]\n",
+				mute_val->s.len, mute_val->s.s);
+		}
+	}
+
+	isval.s = STR_NULL;
+
+	/* try to see if there is any custom callee per branch */
+	build_branch_callee_var_names( branch, &name_d, &name_u);
+	if (dlg_api.fetch_dlg_value(dlg, &name_u, &val_type, &isval, 1)== 0) {
+		custom->uri = isval.s;
+		isval.s = STR_NULL;
+		/* there is a custom URI for the branch, check for display too */
+		dlg_api.fetch_dlg_value(dlg, &name_d, &val_type, &isval, 1);
+		custom->display = isval.s;
+		LM_DBG("per-branch callee/peer information was found\n");
+		return 1;
+	}
+
+	return 0;
+}
+
+
 #define should_publish_A(_flags,_mute_s) \
 	( (_flags & DLG_PUB_A) && (_mute_s.len==0 || _mute_s.s[0]!='Y') )
 
@@ -187,57 +226,90 @@ __tm_sendpublish(struct cell *t, int type, struct tmcb_params *_params)
 	struct dlginfo_part *peer, *entity, custom;
 	struct dlg_cell *dlg;
 	str callid, *ttag, *ftag;
-	str name_d, name_u, mute_var;
 	int branch, n, expire;
 	int_str mute_val;
-	int_str isval;
-	int val_type;
-
-	mute_val.s = STR_NULL;
-	isval.s = STR_NULL;
 
 	param = (struct dlginfo_cb_params*)(*_params->param);
-	peer = &(param->peer);
 	entity = &(param->entity);
 
-	if (type==TMCB_ON_FAILURE) {
-		/* the transaction completed with a failure - explicitly terminate
-		 * any branches still in "early" state which never received a final
+	if ( type&(TMCB_ON_FAILURE|TMCB_TRANS_DELETED) ) {
+		/* explicitly terminate any published trying/early branches which
+		 * never received a final
 		 * negative reply (e.g. UAS went silent after sending 180), otherwise
 		 * their published state will linger until it expires */
-		if (get_callid(_params->req, &callid) < 0)
+		if (_params->req) {
+			if (get_callid(_params->req, &callid) < 0)
+				return;
+		} else if (t->uas.request && t->uas.request->callid) {
+			callid = t->uas.request->callid->body;
+			trim(&callid);
+		} else
 			return;
 
 		if (include_tags) {
-			if(parse_from_header( _params->req )<0
-			|| parse_to_header( _params->req )<0 ) {
-				LM_ERR("failed to parse the request\n");
-				return;
+			if (_params->req) {
+				if(parse_from_header( _params->req )<0 ) {
+					LM_ERR("failed to parse the request\n");
+					return;
+				}
+				ftag = &(get_from(_params->req)->tag_value);
+			} else {
+				ftag = (t->uas.request && t->uas.request->from &&
+				t->uas.request->from->parsed) ?
+				&(get_from(t->uas.request)->tag_value) : NULL;
 			}
-			ftag = &(get_from(_params->req)->tag_value);
-			ttag = &(get_to(_params->req)->tag_value);
 		} else {
-			ftag = ttag = NULL;
+			ftag = NULL;
 		}
 
-		/* note: this callback runs under the transaction's reply lock,
-		 * so it is safe to test/set the bitmasks here */
+		/* note: if in TMCB_ON_FAILURE, the callback runs under the 
+		 * transaction's reply lock, so it is safe to test/set the 
+		 * bitmasks here ;
+		 * If in TMCB_TRANS_DELETED, everything is done with the transaction
+		 * this is the singular EOL point, so it is safe too */
 		for (branch=t->first_branch; branch<t->nr_of_outgoings; branch++) {
-			if ((param->bitmask_early & (((long long)1) << branch)) &&
+			if ((param->bitmask_published & (((long long)1) << branch)) &&
 			!(param->bitmask_failed & (((long long)1) << branch)))
 				continue;
+
+			/* the ANSWERED branch is not dangling: its dialog lives on and
+			 * the dialog callbacks publish its "terminated" at the BYE. Without
+			 * this, TMCB_TRANS_DELETED of a successful INVITE (a few seconds
+			 * after the 200 OK) terminates the call's lamp while the call is up */
+			if (t->uac[branch].last_received>=200
+			&& t->uac[branch].last_received<300)
+				continue;
+
+			memset( &custom, 0, sizeof(custom) );
+			mute_val.s = STR_NULL;
+
+			if ( (dlg=dlg_api.get_dlg())!=NULL &&
+			(get_per_branch_custom_callee(dlg, branch, &mute_val, &custom)==1))
+				peer = &custom;
+			else
+				peer = &(param->peer);
+
+			ttag = (include_tags && (msg=t->uac[branch].reply)!=NULL
+			&& msg!=FAKED_REPLY && msg->to && msg->to->parsed) ?
+			&(get_to(msg)->tag_value) : NULL;
+
 			param->bitmask_failed |= (((long long)1)<<branch);
-			if (param->flags & DLG_PUB_A)
+			if (should_publish_A( param->flags, mute_val.s))
 				dialog_publish("terminated", entity, peer,
 					&callid, branch, 1, 0, ftag, ttag);
-			if (param->flags & DLG_PUB_B)
+			if (should_publish_B( param->flags, mute_val.s))
 				dialog_publish("terminated", peer, entity,
 					&callid, branch, 0, 0, ttag, ftag);
+
+			if (custom.uri.s) pkg_free(custom.uri.s);
+			if (custom.display.s) pkg_free(custom.display.s);
+			if (mute_val.s.s) pkg_free(mute_val.s.s);
 		}
 		return;
 	}
 
 	/* from here on, handling of TMCB_RESPONSE_IN */
+	peer = &(param->peer);
 	branch = tm_api.get_branch_index();
 
 	LM_DBG("TM event %d [%d/%d] received, entity [%.*s], peer [%.*s],"
@@ -262,36 +334,11 @@ __tm_sendpublish(struct cell *t, int type, struct tmcb_params *_params)
 	}
 
 	memset( &custom, 0, sizeof(custom) );
+	mute_val.s = STR_NULL;
 
-	dlg = dlg_api.get_dlg();
-
-	if (dlg) {
-
-		/* try to see if there are any muting settings per branch */
-		build_branch_mute_var_name( branch, &mute_var );
-		if (dlg_api.fetch_dlg_value(dlg, &mute_var, &val_type, &mute_val, 1)== 0) {
-			if (mute_val.s.len!=2) {/* we expect a new letters string */
-				pkg_free(mute_val.s.s);
-				mute_val.s.s=NULL;
-				mute_val.s.len=0;
-			} else {
-				LM_DBG("per-branch mute information was found as [%.*s]\n",
-					mute_val.s.len, mute_val.s.s);
-			}
-		}
-
-		/* try to see if there is any custom callee per branch */
-		build_branch_callee_var_names( branch, &name_d, &name_u);
-		if (dlg_api.fetch_dlg_value(dlg, &name_u, &val_type, &isval, 1)== 0) {
-			custom.uri = isval.s;
-			isval.s = STR_NULL;
-			/* there is a custom URI for the branch, check for display too */
-			dlg_api.fetch_dlg_value(dlg, &name_d, &val_type, &isval, 1);
-			custom.display = isval.s;
+	if ( (dlg=dlg_api.get_dlg())!=NULL &&
+	(get_per_branch_custom_callee(dlg, branch, &mute_val, &custom)==1) )
 			peer = &custom;
-			LM_DBG("per-branch callee/peer information was found\n");
-		}
-	}
 
 	LM_DBG("using entity [%.*s]/[%.*s] and peer [%.*s]-/[%.*s], muting [%.*s]\n",
 		entity->display.len, entity->display.s,
@@ -305,6 +352,13 @@ __tm_sendpublish(struct cell *t, int type, struct tmcb_params *_params)
 
 		expire = DEFAULT_CREATED_LIFETIME;
 		if (publish_on_trying) {
+			if (should_publish_A( param->flags, mute_val.s)
+			|| should_publish_B( param->flags, mute_val.s)) {
+				/* Track publication attempts; dialog_publish() returns void. */
+				lock_get(&t->reply_mutex);
+				param->bitmask_published |= (((long long)1)<<branch);
+				lock_release(&t->reply_mutex);
+			}
 			if (should_publish_A( param->flags, mute_val.s))
 				dialog_publish("trying", entity, peer,
 					&callid, branch, 1, expire,
@@ -324,6 +378,9 @@ __tm_sendpublish(struct cell *t, int type, struct tmcb_params *_params)
 			n = 0;
 		} else {
 			param->bitmask_early |= (((long long)1)<<branch);
+			if (should_publish_A( param->flags, mute_val.s)
+			|| should_publish_B( param->flags, mute_val.s))
+				param->bitmask_published |= (((long long)1)<<branch);
 			n = 1;
 		}
 		lock_release(&t->reply_mutex);
@@ -1054,7 +1111,8 @@ int dialoginfo_set(struct sip_msg* msg, str* flag_s)
 
 	/* register TM callback to get access to recevied replies and to
 	 * the transaction failure (to clean up dangling early states) */
-	if (tm_api.register_tmcb( msg, NULL, TMCB_RESPONSE_IN|TMCB_ON_FAILURE,
+	if (tm_api.register_tmcb( msg, NULL,
+		TMCB_RESPONSE_IN|TMCB_ON_FAILURE|TMCB_TRANS_DELETED,
 		__tm_sendpublish, (void*)param_tm, free_cb_param) != 1) {
 		LM_ERR("cannot register TM callback for incoming replies\n");
 		goto end;

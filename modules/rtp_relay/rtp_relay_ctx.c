@@ -181,9 +181,9 @@ struct rtp_relay_ctx *rtp_relay_get_ctx(void)
 	t = t==T_UNDEFINED ? NULL : t;
 
 	if (ctx) {
-		/* if it is local, and we have transaction, move it in transaction */
-		if (t && RTP_RELAY_GET_MSG_CTX()) {
-			RTP_RELAY_CTX_REF(ctx);
+		/* if it is local, and we have transaction, move it in transaction,
+		 * together with the message context's reference */
+		if (t && RTP_RELAY_GET_MSG_CTX() == ctx) {
 			RTP_RELAY_PUT_TM_CTX(t, ctx);
 			RTP_RELAY_PUT_CTX(NULL);
 		}
@@ -193,8 +193,8 @@ struct rtp_relay_ctx *rtp_relay_get_ctx(void)
 	if (!ctx)
 		return NULL;
 
+	/* the initial reference belongs to the holder we store ctx in */
 	if (t) {
-		RTP_RELAY_CTX_REF(ctx);
 		RTP_RELAY_PUT_TM_CTX(t, ctx);
 	} else {
 		RTP_RELAY_PUT_CTX(ctx);
@@ -462,9 +462,13 @@ static void rtp_relay_reqin(struct cell* t, int type, struct tmcb_params *ps)
 		return;
 	}
 
-	RTP_RELAY_CTX_REF(ctx);
+	/* move the message context's reference in the transaction; any other
+	 * holder (dialog, B2B) keeps its own, so take a new one */
+	if (RTP_RELAY_GET_MSG_CTX() == ctx)
+		RTP_RELAY_PUT_CTX(NULL);
+	else
+		RTP_RELAY_CTX_REF(ctx);
 	RTP_RELAY_PUT_TM_CTX(t, ctx);
-	RTP_RELAY_PUT_CTX(NULL);
 }
 
 /* indicates if the new request branch id has been computed */
@@ -997,7 +1001,9 @@ static void rtp_relay_loaded_callback(struct dlg_cell *dlg, int type,
 				&dlg->legs[callee_idx(dlg)].tag : NULL);
 	if (rtp_relay_dlg_callbacks(dlg, ctx) < 0)
 		goto error;
+	RTP_RELAY_CTX_LOCK(ctx);
 	rtp_relay_dlg_req_callbacks(dlg, ctx);
+	RTP_RELAY_CTX_UNLOCK(ctx);
 
 	return;
 error:
@@ -1020,6 +1026,7 @@ static int rtp_relay_b2b_new_tuple(struct b2bl_cb_params *p, unsigned int m)
 		return 0;
 	}
 	rtp_relay_ctx_set_b2b(ctx);
+	RTP_RELAY_CTX_REF(ctx);
 	RTP_RELAY_PUT_B2B_CTX(p->key, ctx);
 
 	return 0;
@@ -1333,6 +1340,8 @@ static int rtp_relay_delete(struct rtp_relay_session *info,
 			(ctx && ctx->flags.s?ctx->flags.len:0),
 			(ctx && ctx->flags.s?ctx->flags.s:NULL),
 			RTP_RELAY_FLAGS_S(leg, RTP_RELAY_FLAGS_DELETE));
+	if (info->branch == RTP_RELAY_ALL_BRANCHES)
+		info->flags |= RTP_RELAY_SESS_DELETE_ALL_BRANCHES;
 	ret = sess->relay->funcs.delete(info, &sess->server,
 			(ctx && ctx->delete.s?&ctx->flags:NULL),
 			RTP_RELAY_FLAGS(leg, RTP_RELAY_FLAGS_DELETE));
@@ -1677,10 +1686,17 @@ static void rtp_relay_dlg_req_callbacks(struct dlg_cell *dlg, struct rtp_relay_c
 			return;
 		}
 	}
+	/* the callback keeps ctx for the dialog's lifetime, so it must own a
+	 * reference: when the INVITE is challenged, rtp_relay_sess_success()
+	 * never runs and the dialog holds no other reference to ctx.
+	 * Called with ctx->lock held. */
+	RTP_RELAY_CTX_REF_UNSAFE(ctx, 1);
 	if (rtp_relay_dlg.register_dlgcb(dlg,
 			DLGCB_REQ_WITHIN,
-			rtp_relay_indlg, ctx, NULL) != 0)
+			rtp_relay_indlg, ctx, rtp_relay_ctx_release) != 0) {
 		LM_ERR("could not register request within dlg callback!\n");
+		RTP_RELAY_CTX_REF_UNSAFE(ctx, -1);
+	}
 }
 
 static int rtp_relay_dlg_callbacks(struct dlg_cell *dlg,
@@ -1860,6 +1876,26 @@ static int rtp_relay_ctx_leg_reply(struct rtp_relay_ctx *ctx, struct sip_msg *ms
 	return ret;
 }
 
+/* a session engaged for all the branches also covers the ones the failure
+ * route may still create (digest retry, failover), so a failed branch must
+ * not destroy it: release the media of the failed attempt and forget its
+ * callee, and the next branch that is forwarded makes a fresh offer */
+static void rtp_relay_sess_failed_branch(struct rtp_relay_ctx *ctx,
+		struct rtp_relay_sess *sess, struct sip_msg *rpl, struct sip_msg *req)
+{
+	struct rtp_relay_session info;
+
+	if (!rtp_sess_late(sess)) {
+		memset(&info, 0, sizeof info);
+		info.msg = (rpl == FAKED_REPLY ? req : rpl);
+		rtp_relay_delete(&info, ctx, sess, RTP_RELAY_CALLEE);
+		rtp_sess_reset_ongoing(sess);
+	}
+	/* the tag belongs to the branch that failed */
+	if (sess->legs[RTP_RELAY_CALLEE])
+		shm_str_clean(&sess->legs[RTP_RELAY_CALLEE]->tag);
+}
+
 static void rtp_relay_ctx_initial_cb(struct cell* t, int type, struct tmcb_params *p)
 {
 	struct rtp_relay_session info;
@@ -1886,6 +1922,11 @@ static void rtp_relay_ctx_initial_cb(struct cell* t, int type, struct tmcb_param
 				LM_DBG("disabled and/or pending session %d/%d\n",
 						rtp_sess_disabled(sess), rtp_sess_pending(sess));
 				goto end;
+			}
+			if (type == TMCB_ON_FAILURE &&
+					sess->index == RTP_RELAY_ALL_BRANCHES) {
+				rtp_relay_sess_failed_branch(ctx, sess, p->rpl, p->req);
+				break;
 			}
 			rtp_relay_fill_sess_leg(ctx, sess, RTP_RELAY_CALLEE,
 					NULL, rtp_relay_ctx_branch());
@@ -1965,20 +2006,21 @@ int rtp_relay_ctx_engage(struct sip_msg *msg,
 	}
 
 	if (route_type != LOCAL_ROUTE) {
-		if (rtp_relay_dlg_ctx_idx < 0) {
-			LM_ERR("dialog module not loaded - failed to engage\n");
-			return -1;
-		}
 		if (!rtp_relay_ctx_engaged(ctx)) {
 
-			/* handles the replies to the original INVITE */
+			/* handles the replies to the original INVITE; the callback
+			 * owns its reference, as it may be released even if no
+			 * transaction is ever created (i.e. stateless reply) */
+			RTP_RELAY_CTX_REF_UNSAFE(ctx, 1);
 			if (rtp_relay_tmb.register_tmcb(msg, 0,
 					TMCB_RESPONSE_FWDED|TMCB_REQUEST_FWDED|TMCB_ON_FAILURE,
 					rtp_relay_ctx_initial_cb, ctx, rtp_relay_ctx_release)!=1) {
 				LM_ERR("failed to install TM reply callback\n");
+				RTP_RELAY_CTX_REF_UNSAFE(ctx, -1);
 				return -1;
 			}
-			rtp_relay_dlg_req_callbacks(NULL, ctx);
+			if (rtp_relay_dlg_ctx_idx >= 0)
+				rtp_relay_dlg_req_callbacks(NULL, ctx);
 			rtp_relay_ctx_set_engaged(ctx);
 		}
 		sess = rtp_relay_new_sess(ctx, relay, set,
@@ -3166,7 +3208,13 @@ static inline int rtp_relay_route_fill_body(struct sip_msg *msg, str *body)
 	if (script_return_get(&val, 0) > 0) {
 		if (val.flags & PV_VAL_STR) {
 			if (body) {
-				*body = val.rs;
+				/* the caller takes ownership of the returned body, so
+				 * it needs a buffer of its own - val.rs points inside
+				 * the script return value, which the core frees itself */
+				if (pkg_str_dup(body, &val.rs) < 0) {
+					LM_ERR("could not duplicate the returned body!\n");
+					return -1;
+				}
 				LM_DBG("returning body [%.*s]\n", body->len, body->s);
 			}
 			if (msg) {
@@ -3208,12 +3256,16 @@ int rtp_relay_route_offer(struct rtp_relay_session *sess,
 		return r;
 	if (rtp_relay_route_fill_body(sess->msg, body) < 0)
 		return -1;
-	if (sess->msg && body)
-		rtp_relay_replace_body(sess->msg, body);
+	/* rtp_relay_route_fill_body() has already replaced the body of the
+	 * message, using a copy of its own */
 	if (script_return_get(&val, 1) > 0 && val.flags & PV_VAL_STR) {
 		if (server->node.s)
 			shm_free(server->node.s);
-		return shm_nt_str_dup(&server->node, &val.rs);
+		if (shm_nt_str_dup(&server->node, &val.rs) < 0) {
+			if (body)
+				pkg_free(body->s);
+			return -1;
+		}
 	}
 	return 0;
 }

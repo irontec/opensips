@@ -176,6 +176,7 @@ static void srec_dlg_end(struct dlg_cell *dlg, int type, struct dlg_cb_params *_
 static void srec_dlg_sequential(struct dlg_cell *dlg, int type, struct dlg_cb_params *_params)
 {
 	struct src_sess *ss;
+	struct src_ctx *ctx;
 	/* check which participant we are talking about */
 	ss = *_params->param;
 
@@ -184,7 +185,8 @@ static void srec_dlg_sequential(struct dlg_cell *dlg, int type, struct dlg_cb_pa
 		return;
 	}
 
-	SIPREC_LOCK(ss->ctx);
+	ctx = ss->ctx;
+	SIPREC_LOCK(ctx);
 
 	SIPREC_REF_UNSAFE(ss);
 	if (srec_tm.register_tmcb(_params->msg, 0, TMCB_RESPONSE_OUT, tm_update_recording,
@@ -193,7 +195,7 @@ static void srec_dlg_sequential(struct dlg_cell *dlg, int type, struct dlg_cb_pa
 		srec_hlog(ss, SREC_UNREF, "error updating recording");
 		SIPREC_UNREF_UNSAFE(ss);
 	}
-	SIPREC_UNLOCK(ss->ctx);
+	SIPREC_UNLOCK(ctx);
 }
 
 static void dlg_src_unref_session(void *p)
@@ -369,8 +371,13 @@ static int srec_b2b_notify(struct sip_msg *msg, str *key, int type,
 		 * ongoing media sessions */
 		if (ss->flags & SIPREC_ONGOING)
 			return 0;
-		if (!ss->ctx->dlg || ss->ctx->dlg->state >= DLG_STATE_DELETED)
-			return 0;
+		if (!ss->ctx->dlg || ss->ctx->dlg->state >= DLG_STATE_DELETED) {
+			/* the call is over - no failover, just drop the session; as on
+			 * failover, destroy it first, so no stop event is raised for a
+			 * recording that never started */
+			srec_logic_destroy(ss, 0);
+			goto no_recording;
+		}
 		if (srs_skip_failover(msg->first_line.u.reply.status) ||
 				srs_do_failover(ss) < 0) {
 			LM_DBG("no more to failover!\n");
@@ -441,10 +448,11 @@ no_recording:
 		raise_siprec_stop_event(ss);
 	srec_logic_destroy(ss, 0);
 
-	if (ss->ctx->dlg && !(ss->flags & SIPREC_DLG_CBS)) {
+	if (!(ss->flags & SIPREC_DLG_CBS)) {
 		/* if the dialog has already been engaged, then we need to keep the
 		 * reference until the end of the dialog, where it will be cleaned up */
-		srec_dlg.dlg_ctx_put_ptr(ss->ctx->dlg, srec_dlg_idx, NULL);
+		if (ss->ctx->dlg)
+			srec_dlg.dlg_ctx_put_ptr(ss->ctx->dlg, srec_dlg_idx, NULL);
 		srec_hlog(ss, SREC_UNREF, "no recording");
 		SIPREC_UNREF(ss);
 	}
@@ -553,6 +561,11 @@ static int srs_send_invite(struct src_sess *sess)
 		ci.local_contact = ct;
 	}
 
+	/* The reply callback may run before client_new() returns.  Keep the
+	 * session alive until the returned b2b key has been copied, since the
+	 * callback may otherwise drop the recording reference and free sess while
+	 * we are still updating it below. */
+	SIPREC_REF_UNSAFE(sess);
 	client = srec_b2b.client_new(&ci, srec_b2b_notify, srec_b2b_confirm,
 			&mod_name, &sess->ctx->dlg->callid, NULL, sess, NULL);
 	pkg_free(body.s);
@@ -563,6 +576,7 @@ static int srs_send_invite(struct src_sess *sess)
 	if (!client) {
 		LM_ERR("cannot start recording with %.*s!\n",
 				ci.req_uri.len, ci.req_uri.s);
+		SIPREC_UNREF_UNSAFE(sess);
 		return -1;
 	}
 
@@ -573,11 +587,13 @@ static int srs_send_invite(struct src_sess *sess)
 	if (!sess->b2b_key.s) {
 		LM_ERR("out of shm memory!\n");
 		pkg_free(client);
+		SIPREC_UNREF_UNSAFE(sess);
 		return -1;
 	}
 	memcpy(sess->b2b_key.s, client->s, client->len);
 	sess->b2b_key.len = client->len;
 	pkg_free(client);
+	SIPREC_UNREF_UNSAFE(sess);
 
 	return 0;
 }
@@ -585,13 +601,15 @@ static int srs_send_invite(struct src_sess *sess)
 static void srec_dlg_late(struct dlg_cell *dlg, int type, struct dlg_cb_params *_params)
 {
 	struct src_sess *ss;
+	struct src_ctx *ctx;
 
 	if (!_params) {
 		LM_ERR("no parameter specified to dlg callback!\n");
 		return;
 	}
 	ss = *_params->param;
-	SIPREC_LOCK(ss->ctx);
+	ctx = ss->ctx;
+	SIPREC_LOCK(ctx);
 	if ((ss->flags & SIPREC_LATE) == 0)
 		goto unlock;
 	if (src_start_recording(_params->msg, ss) < 0) {
@@ -600,7 +618,7 @@ static void srec_dlg_late(struct dlg_cell *dlg, int type, struct dlg_cb_params *
 	}
 	ss->flags &= ~SIPREC_LATE;
 unlock:
-	SIPREC_UNLOCK(ss->ctx);
+	SIPREC_UNLOCK(ctx);
 }
 
 
@@ -652,8 +670,8 @@ int src_start_recording(struct sip_msg *msg, struct src_sess *sess)
 	ret = srs_send_invite(sess);
 	if (ret < 0) {
 		srec_hlog(sess, SREC_UNREF, "error while starting recording");
-		SIPREC_UNREF_UNSAFE(sess);
 		srec_rtp.copy_delete(sess->ctx->rtp, &sess->instance, &sess->media);
+		SIPREC_UNREF_UNSAFE(sess);
 		return ret;
 	}
 
@@ -742,6 +760,7 @@ static void tm_update_recording(struct cell *t, int type, struct tmcb_params *ps
 void tm_start_recording(struct cell *t, int type, struct tmcb_params *ps)
 {
 	struct src_sess *ss;
+	struct src_ctx *ctx;
 	str *body;
 
 	if (!is_invite(t))
@@ -754,7 +773,8 @@ void tm_start_recording(struct cell *t, int type, struct tmcb_params *ps)
 	if (body && body->len)
 		ss->flags |= SIPREC_ANSWERED;
 
-	SIPREC_LOCK(ss->ctx);
+	ctx = ss->ctx;
+	SIPREC_LOCK(ctx);
 	/* engage only on successful calls */
 	/* if session has been started, do not start it again */
 	if (ss->flags & SIPREC_STARTED)
@@ -763,7 +783,7 @@ void tm_start_recording(struct cell *t, int type, struct tmcb_params *ps)
 		LM_DBG("Session %p (%s) not answered yet!\n", ss, ss->uuid);
 	else if (src_start_recording(ps->rpl, ss) < 0)
 		LM_ERR("cannot start recording!\n");
-	SIPREC_UNLOCK(ss->ctx);
+	SIPREC_UNLOCK(ctx);
 }
 
 void srec_logic_destroy(struct src_sess *sess, int keep_sdp)
